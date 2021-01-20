@@ -80,11 +80,11 @@ Although the regular linux compiliation flags will work fine, to take full advan
 
 ##### Using gcc/clang (32 bit)
 
-```cc *.c -o ClassiCube -framework Carbon -framework AGL -framework OpenGL```
+```cc *.c -o ClassiCube -framework Carbon -framework AGL -framework OpenGL -framework IOKit```
 
 ##### Using gcc/clang (64 bit)
 
-```cc *.c -o ClassiCube -framework Cocoa -framework OpenGL -lobjc```
+```cc *.c -o ClassiCube -framework Cocoa -framework OpenGL -framework IOKit -lobjc```
 
 ### Compiling - other desktop OSes
 
@@ -127,6 +127,17 @@ NOTE: You have to change entry->d_type == DT_DIR to Directory_Exists(&path) (TOD
 ```emcc *.c -s ALLOW_MEMORY_GROWTH=1 --preload-file texpacks/default.zip```
 
 The generated javascript file has some issues. [See here for how to fix](doc/compile-fixes.md#webclient-patches)
+
+#### Android
+
+Use Android Studio or run gradlew in android folder (TODO explain more detailed)
+
+#### iOS
+
+```clang *.c interop_ios.m -framework UIKit -framework OpenGLES -framework Foundation -lobjc```
+
+iOS version is unfinished because of lack of access to suitable devices for me to test with
+
 
 ##### Other
 

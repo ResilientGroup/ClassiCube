@@ -2,7 +2,7 @@
 #define CC_SCREENS_H
 #include "Core.h"
 /* Contains all 2D non-menu screen implementations.
-   Copyright 2014-2020 ClassiCube | Licensed under BSD-3
+   Copyright 2014-2021 ClassiCube | Licensed under BSD-3
 */
 struct Screen;
 
@@ -22,7 +22,6 @@ int Screen_TPointer(void* s, int id, int x, int y);
 
 void Screen_NullFunc(void* screen);
 void Screen_NullUpdate(void* screen, double delta);
-int  Screen_InputDown(void* screen, int key);
 
 void InventoryScreen_Show(void);
 void HUDScreen_Show(void);

@@ -2,7 +2,7 @@
 #define CC_GUI_H
 #include "Core.h"
 /* Describes and manages 2D GUI elements on screen.
-   Copyright 2014-2020 ClassiCube | Licensed under BSD-3
+   Copyright 2014-2021 ClassiCube | Licensed under BSD-3
 */
 
 enum GuiAnchor {
@@ -46,6 +46,8 @@ CC_VAR extern struct _GuiData {
 	/* (internal) Bitmask of on-screen buttons, see Input.h */
 	int _onscreenButtons;
 	float RawTouchScale;
+	/* The highest priority screen that has grabbed input. */
+	struct Screen* InputGrab;
 } Gui;
 
 float Gui_Scale(float value);
@@ -70,16 +72,16 @@ struct ScreenVTABLE {
 	void (*BuildMesh)(void* elem);
 	/* Returns non-zero if an input press is handled. */
 	int  (*HandlesInputDown)(void* elem, int key);
-	/* Returns non-zero if an input release is handled. */
-	int  (*HandlesInputUp)(void* elem, int key);
+	/* Called when an input key or button is released */
+	void (*OnInputUp)(void* elem, int key);
 	/* Returns non-zero if a key character press is handled. */
 	int  (*HandlesKeyPress)(void* elem, char keyChar);
 	/* Returns non-zero if on-screen keyboard text changed is handled. */
 	int  (*HandlesTextChanged)(void* elem, const cc_string* str);
 	/* Returns non-zero if a pointer press is handled. */
 	int  (*HandlesPointerDown)(void* elem, int id, int x, int y);
-	/* Returns non-zero if a pointer release is handled. */
-	int  (*HandlesPointerUp)(void* elem,   int id, int x, int y);
+	/* Called when a pointer is released. */
+	void (*OnPointerUp)(void* elem,   int id, int x, int y);
 	/* Returns non-zero if a pointer movement is handled. */
 	int  (*HandlesPointerMove)(void* elem, int id, int x, int y);
 	/* Returns non-zero if a mouse wheel scroll is handled. */
@@ -104,16 +106,29 @@ struct Screen { Screen_Body };
 void Screen_RenderWidgets(void* screen, double delta);
 /* Calls Widget_Render2 on each widget in the screen. */
 void Screen_Render2Widgets(void* screen, double delta);
-/* Calls Widget_Layout on each widget in the screen. */
-void Screen_Layout(void* screen);
-/* Calls Widget_Free on each widget in the screen. */
-/* Also deletes the screen's vb. */
-void Screen_ContextLost(void* screen);
 void Screen_UpdateVb(void* screen);
 struct VertexTextured* Screen_LockVb(void* screen);
-void Screen_BuildMesh(void* screen);
 int Screen_DoPointerDown(void* screen, int id, int x, int y);
 int Screen_Index(void* screen, void* w);
+
+/* Default mesh building implementation for a screen */
+/*  (Locks vb, calls Widget_BuildMesh on each widget, then unlocks vb) */
+void Screen_BuildMesh(void* screen);
+/* Default layout implementation for a screen */
+/*  (Calls Widget_Layout on each widget) */
+void Screen_Layout(void* screen);
+/* Default context lost implementation for a screen */
+/*  (Deletes vb, then calls Elem_Free on each widget) */
+void Screen_ContextLost(void* screen);
+/* Default input down implementation for a screen */
+/*  (returns true if key is NOT a function key) */
+int  Screen_InputDown(void* screen, int key);
+/* Default input up implementation for a screen */
+/*  (does nothing) */
+void Screen_InputUp(void*   screen, int key);
+/* Default pointer release implementation for a screen */
+/*  (does nothing) */
+void Screen_PointerUp(void* s, int id, int x, int y);
 
 typedef void (*Widget_LeftClick)(void* screen, void* widget);
 struct WidgetVTABLE {
@@ -125,14 +140,14 @@ struct WidgetVTABLE {
 	void (*Reposition)(void* elem);
 	/* Returns non-zero if an input press is handled. */
 	int (*HandlesKeyDown)(void* elem, int key);
-	/* Returns non-zero if an input release is handled. */
-	int (*HandlesKeyUp)(void* elem, int key);
+	/* Called when an input key or button is released. */
+	void (*OnInputUp)(void* elem, int key);
 	/* Returns non-zero if a mouse wheel scroll is handled. */
 	int (*HandlesMouseScroll)(void* elem, float delta);
 	/* Returns non-zero if a pointer press is handled. */
 	int (*HandlesPointerDown)(void* elem, int id, int x, int y);
-	/* Returns non-zero if a pointer release is handled. */
-	int (*HandlesPointerUp)(void* elem,   int id, int x, int y);
+	/* Called when a pointer is released. */
+	void (*OnPointerUp)(void* elem, int id, int x, int y);
 	/* Returns non-zero if a pointer movement is handled. */
 	int (*HandlesPointerMove)(void* elem, int id, int x, int y);
 	/* Builds the mesh of vertices for this widget. */
@@ -207,6 +222,7 @@ CC_API struct Screen* Gui_GetInputGrab(void);
 struct Screen* Gui_GetBlocksWorld(void);
 /* Returns highest priority screen that is closable. */
 struct Screen* Gui_GetClosable(void);
+void Gui_UpdateInputGrab(void);
 void Gui_ShowPauseMenu(void);
 
 void Gui_LayoutAll(void);
@@ -232,11 +248,11 @@ void TextAtlas_AddInt(struct TextAtlas* atlas, int value, struct VertexTextured*
 #define Elem_Free(elem)          (elem)->VTABLE->Free(elem)
 #define Elem_HandlesKeyPress(elem, key) (elem)->VTABLE->HandlesKeyPress(elem, key)
 #define Elem_HandlesKeyDown(elem, key)  (elem)->VTABLE->HandlesKeyDown(elem, key)
-#define Elem_HandlesKeyUp(elem, key)    (elem)->VTABLE->HandlesKeyUp(elem, key)
+#define Elem_OnInputUp(elem,      key)  (elem)->VTABLE->OnInputUp(elem, key)
 
 #define Elem_HandlesMouseScroll(elem, delta)    (elem)->VTABLE->HandlesMouseScroll(elem, delta)
 #define Elem_HandlesPointerDown(elem, id, x, y) (elem)->VTABLE->HandlesPointerDown(elem, id, x, y)
-#define Elem_HandlesPointerUp(elem,   id, x, y) (elem)->VTABLE->HandlesPointerUp(elem,   id, x, y)
+#define Elem_OnPointerUp(elem,        id, x, y) (elem)->VTABLE->OnPointerUp(elem,        id, x, y)
 #define Elem_HandlesPointerMove(elem, id, x, y) (elem)->VTABLE->HandlesPointerMove(elem, id, x, y)
 
 #define Widget_BuildMesh(widget, vertices) (widget)->VTABLE->BuildMesh(widget, vertices)

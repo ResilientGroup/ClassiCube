@@ -43,6 +43,7 @@ static void CloseActiveScreen(void) {
 }
 
 void Launcher_SetScreen(struct LScreen* screen) {
+	int i;
 	CloseActiveScreen();
 	activeScreen = screen;
 	if (!screen->numWidgets) screen->Init(screen);
@@ -50,7 +51,9 @@ void Launcher_SetScreen(struct LScreen* screen) {
 	screen->Show(screen);
 	screen->Layout(screen);
 	/* for hovering over active button etc */
-	screen->MouseMove(screen, 0, 0);
+	for (i = 0; i < Pointers_Count; i++) {
+		screen->MouseMove(screen, i);
+	}
 
 	Launcher_Redraw();
 }
@@ -73,31 +76,27 @@ static CC_NOINLINE void InitFramebuffer(void) {
 	Window_AllocFramebuffer(&Launcher_Framebuffer);
 }
 
-static cc_bool UsingBitmappedFont(void) {
-	return (useBitmappedFont || Launcher_ClassicBackground) && hasBitmappedFont;
-}
-
 
 /*########################################################################################################################*
 *--------------------------------------------------------Starter/Updater--------------------------------------------------*
 *#########################################################################################################################*/
-static TimeMS lastJoin;
+static cc_uint64 lastJoin;
 cc_bool Launcher_StartGame(const cc_string* user, const cc_string* mppass, const cc_string* ip, const cc_string* port, const cc_string* server) {
 	cc_string args; char argsBuffer[512];
 	TimeMS now;
 	cc_result res;
 	
-	now = DateTime_CurrentUTC_MS();
-	if (lastJoin + 1000 > now) return false;
+	now = Stopwatch_Measure();
+	if (Stopwatch_ElapsedMS(lastJoin, now) < 1000) return false;
 	lastJoin = now;
 
 	/* Save resume info */
 	if (server->length) {
-		Options_Set("launcher-server",   server);
-		Options_Set("launcher-username", user);
-		Options_Set("launcher-ip",       ip);
-		Options_Set("launcher-port",     port);
-		Options_SetSecure("launcher-mppass", mppass, user);
+		Options_Set(ROPT_SERVER, server);
+		Options_Set(ROPT_USER,   user);
+		Options_Set(ROPT_IP,     ip);
+		Options_Set(ROPT_PORT,   port);
+		Options_SetSecure(ROPT_MPPASS, mppass, user);
 	}
 	/* Save options BEFORE starting new game process */
 	/* Otherwise can get 'file already in use' errors on startup */
@@ -184,7 +183,7 @@ static cc_bool IsShutdown(int key) {
 	if (key == KEY_F4 && Key_IsAltPressed()) return true;
 
 	/* On macOS, Cmd+Q should also end the process */
-#ifdef CC_BUILD_OSX
+#ifdef CC_BUILD_DARWIN
 	return key == 'Q' && Key_IsWinPressed();
 #else
 	return false;
@@ -209,16 +208,16 @@ static void OnMouseWheel(void* obj, float delta) {
 }
 
 static void OnPointerDown(void* obj, int idx) {
-	activeScreen->MouseDown(activeScreen, 0);
+	activeScreen->MouseDown(activeScreen, idx);
 }
 
 static void OnPointerUp(void* obj, int idx) {
-	activeScreen->MouseUp(activeScreen, 0);
+	activeScreen->MouseUp(activeScreen, idx);
 }
 
-static void OnPointerMove(void* obj, int idx, int deltaX, int deltaY) {
+static void OnPointerMove(void* obj, int idx) {
 	if (!activeScreen) return;
-	activeScreen->MouseMove(activeScreen, deltaX, deltaY);
+	activeScreen->MouseMove(activeScreen, idx);
 }
 
 
@@ -296,6 +295,8 @@ void Launcher_Run(void) {
 	Drawer2D_BlackTextShadows = true;
 	InitFramebuffer();
 
+	Options_Get(LOPT_USERNAME, &Game_Username, "");
+	Session_Load();
 	Launcher_LoadSkin();
 	Launcher_Init();
 	Launcher_TryLoadTexturePack();
@@ -499,7 +500,7 @@ void Launcher_TryLoadTexturePack(void) {
 
 void Launcher_UpdateLogoFont(void) {
 	Font_Free(&logoFont);
-	Drawer2D_BitmappedText = UsingBitmappedFont();
+	Drawer2D_BitmappedText = (useBitmappedFont || Launcher_ClassicBackground) && hasBitmappedFont;
 	Drawer2D_MakeFont(&logoFont, 32, FONT_FLAGS_NONE);
 	Drawer2D_BitmappedText = false;
 }
@@ -549,7 +550,6 @@ void Launcher_ResetPixels(void) {
 		Launcher_ResetArea(0, 0, WindowInfo.Width, WindowInfo.Height);
 	}
 
-	Drawer2D_BitmappedText = UsingBitmappedFont();
 	DrawTextArgs_Make(&args, &title_fore, &logoFont, false);
 	x = WindowInfo.Width / 2 - Drawer2D_TextWidth(&args) / 2;
 
@@ -557,8 +557,6 @@ void Launcher_ResetPixels(void) {
 	Drawer2D_DrawText(&Launcher_Framebuffer, &args, x + titleX, titleY);
 	args.text = title_fore;
 	Drawer2D_DrawText(&Launcher_Framebuffer, &args, x, 0);
-
-	Drawer2D_BitmappedText = false;
 	Launcher_MarkAllDirty();
 }
 

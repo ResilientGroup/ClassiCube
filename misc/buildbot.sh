@@ -18,22 +18,24 @@
 
 # paths, change these as needed
 SOURCE_DIR=~/client
-WEB_CC=~/emscripten/emsdk/emscripten/tag-1.38.30/emcc
-MAC32_CC=~/osx/target/bin/o32-clang
-MAC64_CC=~/osx/target/bin/o64-clang
-WIN32_CC=i686-w64-mingw32-gcc
-WIN64_CC=x86_64-w64-mingw32-gcc
+WEB_CC="~/emsdk/emscripten/1.38.31/emcc"
+MAC32_CC="~/osx/target/bin/o32-clang"
+MAC64_CC="~/osx/target/bin/o64-clang"
+WIN32_CC="i686-w64-mingw32-gcc"
+WIN64_CC="x86_64-w64-mingw32-gcc"
 
 # to simplify stuff
 ALL_FLAGS="-O1 -s -fno-stack-protector -fno-math-errno -Qn -w"
 WIN32_FLAGS="-mwindows -nostartfiles -Wl,-e_main_real -DCC_NOMAIN"
 WIN64_FLAGS="-mwindows -nostartfiles -Wl,-emain_real -DCC_NOMAIN"
-LINUX_FLAGS="-fvisibility=hidden -rdynamic -DCC_BUILD_ICON"
+NIX32_FLAGS="-no-pie -fno-pie -m32 -fvisibility=hidden -rdynamic -DCC_BUILD_ICON"
+NIX64_FLAGS="-no-pie -fno-pie -m64 -fvisibility=hidden -rdynamic -DCC_BUILD_ICON"
+RPI32_FLAGS="-I ~/rpi/include -L ~/rpi/lib -fvisibility=hidden -rdynamic -DCC_BUILD_ICON"
 MACOS_FLAGS="-fvisibility=hidden -rdynamic -DCC_BUILD_ICON"
 
 # I cloned https://github.com/raspberrypi/tools to get prebuilt cross compilers
 # Then I copied across various files/folders from /usr/include and /usr/lib from a real Raspberry pi as needed
-RPI_CC=~/rpi/tools/arm-bcm2708/gcc-linaro-arm-linux-gnueabihf-raspbian/bin/arm-linux-gnueabihf-gcc-4.8.3
+RPI_CC=~/rpi/tools/arm-bcm2708/gcc-linaro-arm-linux-gnueabihf-raspbian-x64/bin/arm-linux-gnueabihf-gcc-4.8.3
 
 # -----------------------------
 build_win32() {
@@ -58,28 +60,28 @@ build_nix32() {
   echo "Building linux32.."
   cp $SOURCE_DIR/misc/CCicon_nix32 $SOURCE_DIR/src/CCicon_nix32.o
   rm cc-nix32
-  gcc *.c $ALL_FLAGS $LINUX_FLAGS CCicon_nix32.o -DCC_COMMIT_SHA=\"$LATEST\" -m32 -o cc-nix32 -lX11 -lXi -lpthread -lGL -lm -ldl
+  gcc *.c $ALL_FLAGS $NIX32_FLAGS CCicon_nix32.o -DCC_COMMIT_SHA=\"$LATEST\" -o cc-nix32 -lX11 -lXi -lpthread -lGL -lm -ldl
 }
 
 build_nix64() {
   echo "Building linux64.."
   cp $SOURCE_DIR/misc/CCicon_nix64 $SOURCE_DIR/src/CCicon_nix64.o
   rm cc-nix64
-  gcc *.c $ALL_FLAGS $LINUX_FLAGS CCicon_nix64.o -DCC_COMMIT_SHA=\"$LATEST\" -m64 -o cc-nix64 -lX11 -lXi -lpthread -lGL -lm -ldl
+  gcc *.c $ALL_FLAGS $NIX64_FLAGS CCicon_nix64.o -DCC_COMMIT_SHA=\"$LATEST\" -o cc-nix64 -lX11 -lXi -lpthread -lGL -lm -ldl
 }
 
 build_mac32() {
   echo "Building mac32.."
   cp $SOURCE_DIR/misc/CCicon_mac32 $SOURCE_DIR/src/CCicon_mac32.o
   rm cc-osx32
-  $MAC32_CC *.c $ALL_FLAGS $MACOS_FLAGS CCicon_mac32.o -DCC_COMMIT_SHA=\"$LATEST\" -o cc-osx32 -framework Carbon -framework AGL -framework OpenGL
+  $MAC32_CC *.c $ALL_FLAGS $MACOS_FLAGS CCicon_mac32.o -DCC_COMMIT_SHA=\"$LATEST\" -o cc-osx32 -framework Carbon -framework AGL -framework OpenGL -framework IOKit -lgcc_s.1
 }
 
 build_mac64() {
   echo "Building mac64.."
   cp $SOURCE_DIR/misc/CCicon_mac64 $SOURCE_DIR/src/CCicon_mac64.o
   rm cc-osx64
-  $MAC64_CC *.c $ALL_FLAGS $MACOS_FLAGS CCicon_mac64.o -DCC_COMMIT_SHA=\"$LATEST\" -o cc-osx64 -framework Cocoa -framework OpenGL -lobjc
+  $MAC64_CC *.c $ALL_FLAGS $MACOS_FLAGS CCicon_mac64.o -DCC_COMMIT_SHA=\"$LATEST\" -o cc-osx64 -framework Cocoa -framework OpenGL -framework IOKit -lobjc
 }
 
 build_web() {
@@ -97,7 +99,7 @@ build_rpi() {
   echo "Building rpi.."
   cp $SOURCE_DIR/misc/CCicon_rpi $SOURCE_DIR/src/CCicon_rpi.o
   rm cc-rpi
-  $RPI_CC *.c $ALL_FLAGS $LINUX_FLAGS CCicon_rpi.o -DCC_COMMIT_SHA=\"$LATEST\" -o cc-rpi -DCC_BUILD_RPI -I ~/rpi/include -L ~/rpi/lib -lGLESv2 -lEGL -lX11 -lXi -lm -lpthread -ldl -lrt -Wl,-rpath-link ~/rpi/lib
+  $RPI_CC *.c $ALL_FLAGS $RPI32_FLAGS CCicon_rpi.o -DCC_COMMIT_SHA=\"$LATEST\" -o cc-rpi -DCC_BUILD_RPI -lGLESv2 -lEGL -lX11 -lXi -lm -lpthread -ldl -lrt -Wl,-rpath-link ~/rpi/lib
 }
 
 # -----------------------------
@@ -118,4 +120,4 @@ build_web
 build_rpi
 
 cd ~
-python notify.py
+python3 notify.py

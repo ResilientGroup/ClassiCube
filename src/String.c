@@ -250,6 +250,12 @@ void String_AppendConst(cc_string* str, const char* src) {
 	}
 }
 
+void String_AppendAll(cc_string* str, const void* data, int len) {
+	const char* src = (const char*)data;
+	int i;
+	for (i = 0; i < len; i++) String_Append(str, src[i]);
+}
+
 void String_AppendString(cc_string* str, const cc_string* src) {
 	int i;
 	for (i = 0; i < src->length; i++) {
@@ -579,7 +585,8 @@ int Convert_CP437ToUtf8(char c, cc_uint8* data) {
 	return Convert_UnicodeToUtf8(Convert_CP437ToUnicode(c), data);
 }
 
-void String_AppendUtf16(cc_string* value, const cc_unichar* chars, int numBytes) {
+void String_AppendUtf16(cc_string* value, const void* data, int numBytes) {
+	const cc_unichar* chars = (const cc_unichar*)data;
 	int i; char c;
 	
 	for (i = 0; i < (numBytes >> 1); i++) {
@@ -757,6 +764,10 @@ cc_bool Convert_ParseBool(const cc_string* str, cc_bool* value) {
 *#########################################################################################################################*/
 #define STRINGSBUFFER_BUFFER_EXPAND_SIZE 8192
 
+#define StringsBuffer_GetOffset(raw)  ((raw) >> buffer->_lenShift)
+#define StringsBuffer_GetLength(raw)  ((raw)  & buffer->_lenMask)
+#define StringsBuffer_PackOffset(off) ((off) << buffer->_lenShift)
+
 CC_NOINLINE static void StringsBuffer_Init(struct StringsBuffer* buffer) {
 	buffer->count       = 0;
 	buffer->totalLength = 0;
@@ -764,6 +775,14 @@ CC_NOINLINE static void StringsBuffer_Init(struct StringsBuffer* buffer) {
 	buffer->flagsBuffer    = buffer->_defaultFlags;
 	buffer->_textCapacity  = STRINGSBUFFER_BUFFER_DEF_SIZE;
 	buffer->_flagsCapacity = STRINGSBUFFER_FLAGS_DEF_ELEMS;
+
+	if (buffer->_lenShift) return;
+	StringsBuffer_SetLengthBits(buffer, STRINGSBUFFER_DEF_LEN_SHIFT);
+}
+
+void StringsBuffer_SetLengthBits(struct StringsBuffer* buffer, int bits) {
+	buffer->_lenShift = bits;
+	buffer->_lenMask  = (1 << bits) - 1;
 }
 
 void StringsBuffer_Clear(struct StringsBuffer* buffer) {
@@ -784,9 +803,16 @@ cc_string StringsBuffer_UNSAFE_Get(struct StringsBuffer* buffer, int i) {
 	if (i < 0 || i >= buffer->count) Logger_Abort("Tried to get String past StringsBuffer end");
 
 	flags  = buffer->flagsBuffer[i];
-	offset = flags >> STRINGSBUFFER_LEN_SHIFT;
-	len    = flags  & STRINGSBUFFER_LEN_MASK;
+	offset = StringsBuffer_GetOffset(flags);
+	len    = StringsBuffer_GetLength(flags);
 	return String_Init(&buffer->textBuffer[offset], len, len);
+}
+
+void StringsBuffer_UNSAFE_GetRaw(struct StringsBuffer* buffer, int i, cc_string* dst) {
+	cc_uint32 flags = buffer->flagsBuffer[i];
+	dst->buffer     = buffer->textBuffer + StringsBuffer_GetOffset(flags);
+	dst->length     = StringsBuffer_GetLength(flags);
+	dst->capacity   = 0;
 }
 
 void StringsBuffer_Add(struct StringsBuffer* buffer, const cc_string* str) {
@@ -799,7 +825,7 @@ void StringsBuffer_Add(struct StringsBuffer* buffer, const cc_string* str) {
 					4, STRINGSBUFFER_FLAGS_DEF_ELEMS, 512);
 	}
 
-	if (str->length > STRINGSBUFFER_LEN_MASK) {
+	if (str->length > buffer->_lenMask) {
 		Logger_Abort("String too big to insert into StringsBuffer");
 	}
 
@@ -810,7 +836,7 @@ void StringsBuffer_Add(struct StringsBuffer* buffer, const cc_string* str) {
 	}
 
 	Mem_Copy(&buffer->textBuffer[textOffset], str->buffer, str->length);
-	buffer->flagsBuffer[buffer->count] = str->length | (textOffset << STRINGSBUFFER_LEN_SHIFT);
+	buffer->flagsBuffer[buffer->count] = str->length | StringsBuffer_PackOffset(textOffset);
 
 	buffer->count++;
 	buffer->totalLength += str->length;
@@ -822,8 +848,8 @@ void StringsBuffer_Remove(struct StringsBuffer* buffer, int index) {
 	if (index < 0 || index >= buffer->count) Logger_Abort("Tried to remove String past StringsBuffer end");
 
 	flags  = buffer->flagsBuffer[index];
-	offset = flags >> STRINGSBUFFER_LEN_SHIFT;
-	len    = flags  & STRINGSBUFFER_LEN_MASK;
+	offset = StringsBuffer_GetOffset(flags);
+	len    = StringsBuffer_GetLength(flags);
 
 	/* Imagine buffer is this: AAXXYYZZ, and want to delete XX */
 	/* We iterate from first char of Y to last char of Z, */
@@ -834,7 +860,7 @@ void StringsBuffer_Remove(struct StringsBuffer* buffer, int index) {
 
 	/* Adjust text offset of elements after this element */
 	/* Elements may not be in order so must account for that */
-	offsetAdj = len << STRINGSBUFFER_LEN_SHIFT;
+	offsetAdj = StringsBuffer_PackOffset(len);
 	for (i = index; i < buffer->count - 1; i++) {
 		buffer->flagsBuffer[i] = buffer->flagsBuffer[i + 1];
 		if (buffer->flagsBuffer[i] >= flags) {

@@ -66,6 +66,7 @@ static cc_result Audio_AllAvailable(struct AudioContext* ctx, cc_bool* finished)
 *------------------------------------------------------OpenAL backend-----------------------------------------------------*
 *#########################################################################################################################*/
 /* Simpler to just include subset of OpenAL actually use here instead of including */
+/* === BEGIN OPENAL HEADERS === */
 #if defined _WIN32
 #define APIENTRY __cdecl
 #else
@@ -105,7 +106,7 @@ static void      (APIENTRY *_alcDestroyContext)(void* context);
 static void*     (APIENTRY *_alcOpenDevice)(const char* devicename);
 static ALboolean (APIENTRY *_alcCloseDevice)(void* device);
 static ALenum    (APIENTRY *_alcGetError)(void* device);
-/* End of OpenAL headers */
+/* === END OPENAL HEADERS === */
 
 struct AudioContext {
 	ALuint source;
@@ -120,7 +121,7 @@ static void* audio_context;
 
 #if defined CC_BUILD_WIN
 static const cc_string alLib = String_FromConst("openal32.dll");
-#elif defined CC_BUILD_OSX
+#elif defined CC_BUILD_DARWIN
 static const cc_string alLib = String_FromConst("/System/Library/Frameworks/OpenAL.framework/Versions/A/OpenAL");
 #elif defined CC_BUILD_BSD
 static const cc_string alLib = String_FromConst("libopenal.so");
@@ -1063,7 +1064,7 @@ static void Music_Init(void) {
 	music_joining     = false;
 	music_pendingStop = false;
 
-	music_thread = Thread_Start(Music_RunLoop, false);
+	music_thread = Thread_Start(Music_RunLoop);
 }
 
 static void Music_Free(void) {

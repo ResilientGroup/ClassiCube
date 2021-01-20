@@ -201,7 +201,7 @@ void Gui_RemoveCore(struct Screen* s) {
 }
 
 CC_NOINLINE static void Gui_OnScreensChanged(void) {
-	Camera_CheckFocus();
+	Gui_UpdateInputGrab();
 	InputHandler_OnScreensChanged();
 }
 
@@ -244,6 +244,11 @@ struct Screen* Gui_GetClosable(void) {
 		if (Gui_Screens[i]->closable) return Gui_Screens[i];
 	}
 	return NULL;
+}
+
+void Gui_UpdateInputGrab(void) {
+	Gui.InputGrab = Gui_GetInputGrab();
+	Camera_CheckFocus();
 }
 
 void Gui_ShowPauseMenu(void) {
@@ -405,29 +410,6 @@ void Screen_Render2Widgets(void* screen, double delta) {
 	}
 }
 
-void Screen_Layout(void* screen) {
-	struct Screen* s = (struct Screen*)screen;
-	struct Widget** widgets = s->widgets;
-	int i;
-
-	for (i = 0; i < s->numWidgets; i++) {
-		if (!widgets[i]) continue;
-		Widget_Layout(widgets[i]);
-	}
-}
-
-void Screen_ContextLost(void* screen) {
-	struct Screen* s = (struct Screen*)screen;
-	struct Widget** widgets = s->widgets;
-	int i;
-	Gfx_DeleteDynamicVb(&s->vb);
-
-	for (i = 0; i < s->numWidgets; i++) {
-		if (!widgets[i]) continue;
-		Elem_Free(widgets[i]);
-	}
-}
-
 void Screen_UpdateVb(void* screen) {
 	struct Screen* s = (struct Screen*)screen;
 	Gfx_RecreateDynamicVb(&s->vb, VERTEX_FORMAT_TEXTURED, s->maxVertices);
@@ -437,23 +419,6 @@ struct VertexTextured* Screen_LockVb(void* screen) {
 	struct Screen* s = (struct Screen*)screen;
 	return (struct VertexTextured*)Gfx_LockDynamicVb(s->vb,
 										VERTEX_FORMAT_TEXTURED, s->maxVertices);
-}
-
-void Screen_BuildMesh(void* screen) {
-	struct Screen* s = (struct Screen*)screen;
-	struct Widget** widgets = s->widgets;
-	struct VertexTextured* data;
-	struct VertexTextured** ptr;
-	int i;
-
-	data = Screen_LockVb(s);
-	ptr  = &data;
-
-	for (i = 0; i < s->numWidgets; i++) {
-		if (!widgets[i]) continue;
-		Widget_BuildMesh(widgets[i], ptr);
-	}
-	Gfx_UnlockDynamicVb(s->vb);
 }
 
 int Screen_DoPointerDown(void* screen, int id, int x, int y) {
@@ -488,6 +453,50 @@ int Screen_Index(void* screen, void* widget) {
 	}
 	return -1;
 }
+
+void Screen_BuildMesh(void* screen) {
+	struct Screen* s = (struct Screen*)screen;
+	struct Widget** widgets = s->widgets;
+	struct VertexTextured* data;
+	struct VertexTextured** ptr;
+	int i;
+
+	data = Screen_LockVb(s);
+	ptr  = &data;
+
+	for (i = 0; i < s->numWidgets; i++) {
+		if (!widgets[i]) continue;
+		Widget_BuildMesh(widgets[i], ptr);
+	}
+	Gfx_UnlockDynamicVb(s->vb);
+}
+
+void Screen_Layout(void* screen) {
+	struct Screen* s = (struct Screen*)screen;
+	struct Widget** widgets = s->widgets;
+	int i;
+
+	for (i = 0; i < s->numWidgets; i++) {
+		if (!widgets[i]) continue;
+		Widget_Layout(widgets[i]);
+	}
+}
+
+void Screen_ContextLost(void* screen) {
+	struct Screen* s = (struct Screen*)screen;
+	struct Widget** widgets = s->widgets;
+	int i;
+	Gfx_DeleteDynamicVb(&s->vb);
+
+	for (i = 0; i < s->numWidgets; i++) {
+		if (!widgets[i]) continue;
+		Elem_Free(widgets[i]);
+	}
+}
+
+int  Screen_InputDown(void* screen, int key) { return key < KEY_F1 || key > KEY_F24; }
+void Screen_InputUp(void*   screen, int key) { }
+void Screen_PointerUp(void* s, int id, int x, int y) { }
 
 
 /*########################################################################################################################*

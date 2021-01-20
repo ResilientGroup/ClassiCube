@@ -51,15 +51,6 @@ int Pointers_Count;
 cc_bool Input_TapPlace = true, Input_HoldPlace = false;
 cc_bool Input_TouchMode;
 
-/* Touch fingers are initially are all type, meaning they could */
-/* trigger menu clicks, camera movement, or place/delete blocks */
-/* But for example, after clicking on a menu button, you wouldn't */
-/* want moving that finger anymore to move the camera */
-#define TOUCH_TYPE_GUI    1
-#define TOUCH_TYPE_CAMERA 2
-#define TOUCH_TYPE_BLOCKS 4
-#define TOUCH_TYPE_ALL (TOUCH_TYPE_GUI | TOUCH_TYPE_CAMERA | TOUCH_TYPE_BLOCKS)
-
 static void DoDeleteBlock(void);
 static void DoPlaceBlock(void);
 static void MouseStatePress(int button);
@@ -265,7 +256,6 @@ void Input_Clear(void) {
 /*########################################################################################################################*
 *----------------------------------------------------------Mouse----------------------------------------------------------*
 *#########################################################################################################################*/
-int Mouse_X, Mouse_Y;
 struct Pointer Pointers[INPUT_MAX_POINTERS];
 cc_bool Input_RawMode;
 
@@ -282,8 +272,6 @@ void Mouse_ScrollWheel(float delta) {
 }
 
 void Pointer_SetPosition(int idx, int x, int y) {
-	int deltaX = x - Mouse_X, deltaY = y - Mouse_Y;
-	Mouse_X = x; Mouse_Y = y;
 	if (x == Pointers[idx].x && y == Pointers[idx].y) return;
 	/* TODO: reset to -1, -1 when pointer is removed */
 	Pointers[idx].x = x; Pointers[idx].y = y;
@@ -291,7 +279,7 @@ void Pointer_SetPosition(int idx, int x, int y) {
 #ifdef CC_BUILD_TOUCH
 	if (Input_TouchMode && !(touches[idx].type & TOUCH_TYPE_GUI)) return;
 #endif
-	Event_RaiseMove(&PointerEvents.Moved, idx, deltaX, deltaY);
+	Event_RaiseInt(&PointerEvents.Moved, idx);
 }
 
 
@@ -340,24 +328,15 @@ static void KeyBind_Load(void) {
 	}
 }
 
-static void KeyBind_Save(void) {
+void KeyBind_Set(KeyBind binding, int key) {
 	cc_string name; char nameBuffer[STRING_SIZE];
 	cc_string value;
-	int i;	
-
 	String_InitArray(name, nameBuffer);
-	for (i = 0; i < KEYBIND_COUNT; i++) {
-		name.length = 0; 
-		String_Format1(&name, "key-%c", keybindNames[i]);
 
-		value = String_FromReadonly(Input_Names[KeyBinds[i]]);
-		Options_SetString(&name, &value);
-	}
-}
-
-void KeyBind_Set(KeyBind binding, int key) {
+	String_Format1(&name, "key-%c", keybindNames[binding]);
+	value = String_FromReadonly(Input_Names[key]);
+	Options_SetString(&name, &value);
 	KeyBinds[binding] = key;
-	KeyBind_Save();
 }
 
 /* Initialises and loads key bindings from options */
@@ -515,7 +494,7 @@ static void StoredHotkeys_LoadAll(void) {
 	int i;
 
 	for (i = 0; i < Options.count; i++) {
-		entry = StringsBuffer_UNSAFE_Get(&Options, i);
+		StringsBuffer_UNSAFE_GetRaw(&Options, i, &entry);
 		String_UNSAFE_Separate(&entry, '=', &key, &value);
 
 		if (!String_CaselessStarts(&key, &prefix)) continue;
@@ -595,7 +574,7 @@ static void MouseStateRelease(int button) {
 void InputHandler_OnScreensChanged(void) {
 	input_lastClick = DateTime_CurrentUTC_MS();
 	input_pickingId = -1;
-	if (!Gui_GetInputGrab()) return;
+	if (!Gui.InputGrab) return;
 
 	/* If input is grabbed, then the mouse isn't used for picking blocks in world anymore. */
 	/* So release all mouse buttons, since game stops sending PlayerClick during grabbed input */
@@ -760,7 +739,7 @@ void InputHandler_PickBlocks(void) {
 
 	if (delta < 250) return; /* 4 times per second */
 	input_lastClick = now;
-	if (Gui_GetInputGrab()) return;
+	if (Gui.InputGrab) return;
 
 	left   = KeyBind_IsPressed(KEYBIND_DELETE_BLOCK);
 	middle = KeyBind_IsPressed(KEYBIND_PICK_BLOCK);
@@ -798,7 +777,7 @@ static cc_bool InputHandler_IsShutdown(int key) {
 	if (key == KEY_F4 && Key_IsAltPressed()) return true;
 
 	/* On macOS, Cmd+Q should also end the process */
-#ifdef CC_BUILD_OSX
+#ifdef CC_BUILD_DARWIN
 	return key == 'Q' && Key_IsWinPressed();
 #else
 	return false;
@@ -847,7 +826,7 @@ static void InputHandler_CheckZoomFov(void* obj) {
 }
 
 static cc_bool HandleBlockKey(int key) {
-	if (Gui_GetInputGrab()) return false;
+	if (Gui.InputGrab) return false;
 
 	if (key == KeyBinds[KEYBIND_DELETE_BLOCK]) {
 		MouseStatePress(MOUSE_LEFT);
@@ -928,7 +907,7 @@ static void HandleHotkeyDown(int key) {
 
 	if (!hkey->StaysOpen) {
 		Chat_Send(&text, false);
-	} else if (!Gui_GetInputGrab()) {
+	} else if (!Gui.InputGrab) {
 		ChatScreen_OpenInput(&text);
 	}
 }
@@ -963,7 +942,7 @@ static void OnMouseWheel(void* obj, float delta) {
 	}
 }
 
-static void OnPointerMove(void* obj, int idx, int xDelta, int yDelta) {
+static void OnPointerMove(void* obj, int idx) {
 	struct Screen* s;
 	int i, x = Pointers[idx].x, y = Pointers[idx].y;
 
@@ -976,7 +955,7 @@ static void OnPointerMove(void* obj, int idx, int xDelta, int yDelta) {
 
 static void OnPointerDown(void* obj, int idx) {
 	struct Screen* s;
-	int i, x, y;
+	int i, x, y, mask;
 #ifdef CC_BUILD_TOUCH
 	if (Input_TouchMode && !(touches[idx].type & TOUCH_TYPE_GUI)) return;
 #endif
@@ -985,20 +964,22 @@ static void OnPointerDown(void* obj, int idx) {
 	for (i = 0; i < Gui.ScreensCount; i++) {
 		s = Gui_Screens[i];
 		s->dirty = true;
+		mask = s->VTABLE->HandlesPointerDown(s, 1 << idx, x, y);
+
 #ifdef CC_BUILD_TOUCH
-		if (s->VTABLE->HandlesPointerDown(s, 1 << idx, x, y)) {
-			/* using &= TOUCH_TYPE_GUI instead of = TOUCH_TYPE_GUI is to handle */
-			/* one specific case - when clicking 'Quit game' in android version, */
-			/* it will call Game_Free, which will in turn call InputComponent.Free. */
+		if (mask) {
+			/* Using &= mask instead of = mask is to handle one specific case */
+			/*  - when clicking 'Quit game' in android version, it will call  */
+			/*  Game_Free, which will in turn call InputComponent.Free.       */
 			/* That resets the type of all touches to 0 - however, since it is */
-			/* called DURING HandlesPointerDown, using = TOUCH_TYPE_GUI here would */
-			/* undo the resetting of type to 0 for one of the touches states, */
-			/* causing problems later with Input_AddTouch as it will assume that */
-			/* the aforementioned touches state is wrongly still in use */
-			touches[idx].type &= TOUCH_TYPE_GUI; return;
+			/*  called DURING HandlesPointerDown, using = mask here would undo */
+			/*  the resetting of type to 0 for one of the touches states,      */
+			/*  causing problems later with Input_AddTouch as it will assume that */
+			/*  the aforementioned touches state is wrongly still in use */
+			touches[idx].type &= mask; return;
 		}
 #else
-		if (s->VTABLE->HandlesPointerDown(s, 1 << idx, x, y)) return;
+		if (mask) return;
 #endif
 	}
 }
@@ -1015,7 +996,7 @@ static void OnPointerUp(void* obj, int idx) {
 	for (i = 0; i < Gui.ScreensCount; i++) {
 		s = Gui_Screens[i];
 		s->dirty = true;
-		if (s->VTABLE->HandlesPointerUp(s, 1 << idx, x, y)) return;
+		s->VTABLE->OnPointerUp(s, 1 << idx, x, y);
 	}
 }
 
@@ -1044,7 +1025,7 @@ static void OnInputDown(void* obj, int key, cc_bool was) {
 		if (s->VTABLE->HandlesInputDown(s, key)) return;
 	}
 
-	if ((key == KEY_ESCAPE || key == KEY_PAUSE) && !Gui_GetInputGrab()) {
+	if ((key == KEY_ESCAPE || key == KEY_PAUSE) && !Gui.InputGrab) {
 #ifdef CC_BUILD_WEB
 		/* Can't do this in KeyUp, because pressing escape without having */
 		/* explicitly disabled mouse lock means a KeyUp event isn't sent. */
@@ -1082,10 +1063,10 @@ static void OnInputUp(void* obj, int key) {
 	for (i = 0; i < Gui.ScreensCount; i++) {
 		s = Gui_Screens[i];
 		s->dirty = true;
-		if (s->VTABLE->HandlesInputUp(s, key)) return;
+		s->VTABLE->OnInputUp(s, key);
 	}
 
-	if (Gui_GetInputGrab()) return;
+	if (Gui.InputGrab) return;
 	if (key == KeyBinds[KEYBIND_DELETE_BLOCK]) MouseStateRelease(MOUSE_LEFT);
 	if (key == KeyBinds[KEYBIND_PLACE_BLOCK])  MouseStateRelease(MOUSE_RIGHT);
 	if (key == KeyBinds[KEYBIND_PICK_BLOCK])   MouseStateRelease(MOUSE_MIDDLE);

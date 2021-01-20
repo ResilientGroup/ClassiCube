@@ -2,7 +2,7 @@
 #define CC_LSCREENS_H
 #include "Core.h"
 /* Implements screens/menus for the launcher.
-	Copyright 2014-2020 ClassiCube | Licensed under BSD-3
+	Copyright 2014-2021 ClassiCube | Licensed under BSD-3
 */
 struct LWidget;
 struct LScreen;
@@ -19,9 +19,9 @@ typedef void (*LWidget_Func)(struct LScreen* s, struct LWidget* w);
 	LScreen_Func Tick;   /* Repeatedly called multiple times every second. */ \
 	void (*KeyDown)(struct LScreen* s,     int key, cc_bool wasDown); \
 	void (*KeyPress)(struct LScreen* s,    char c);  \
-	void (*MouseDown)(struct LScreen* s,   int btn); \
-	void (*MouseUp)(struct LScreen* s,     int btn); \
-	void (*MouseMove)(struct LScreen* s,   int deltaX, int deltaY); \
+	void (*MouseDown)(struct LScreen* s,   int idx); \
+	void (*MouseUp)(struct LScreen* s,     int idx); \
+	void (*MouseMove)(struct LScreen* s,   int idx); \
 	void (*MouseWheel)(struct LScreen* s,  float delta); \
 	void (*TextChanged)(struct LScreen* s, const cc_string* str); \
 	LWidget_Func HoverWidget;    /* Called when mouse is moved over a given widget. */ \

@@ -4,9 +4,10 @@
 #include "PackedCol.h"
 /* Represents a fixed size 3D array of blocks.
    Also contains associated environment metadata.
-   Copyright 2014-2020 ClassiCube | Licensed under BSD-3
+   Copyright 2014-2021 ClassiCube | Licensed under BSD-3
 */
 struct AABB;
+extern struct IGameComponent World_Component;
 
 /* Unpacka an index into x,y,z (slow!) */
 #define World_Unpack(idx, x, y, z) x = idx % World.Width; z = (idx / World.Width) % World.Length; y = (idx / World.Width) / World.Length;

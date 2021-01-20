@@ -4,7 +4,7 @@
 #include "Constants.h"
 /* Represents 2 and 3 component vectors, and 4 x 4 matrix.
    Frustum culling sourced from http://www.crownandcutlass.com/features/technicaldetails/frustum.html
-   Copyright 2014-2020 ClassiCube | Licensed under BSD-3
+   Copyright 2014-2021 ClassiCube | Licensed under BSD-3
 */
 
 /* 2 component vector (2D vector) */
@@ -17,6 +17,13 @@ typedef struct IVec3_ { int X, Y, Z; } IVec3;
 struct Vec4 { float X, Y, Z, W; };
 /* 4x4 matrix. (for vertex transformations) */
 struct Matrix { struct Vec4 row1, row2, row3, row4; };
+
+#define Matrix_IdentityValue { \
+1.0f, 0.0f, 0.0f, 0.0f, \
+0.0f, 1.0f, 0.0f, 0.0f, \
+0.0f, 0.0f, 1.0f, 0.0f, \
+0.0f, 0.0f, 0.0f, 1.0f  \
+}
 
 /* Identity matrix. (A * Identity = A) */
 extern const struct Matrix Matrix_Identity;

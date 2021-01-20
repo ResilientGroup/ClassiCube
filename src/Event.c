@@ -142,13 +142,6 @@ void Event_RaiseBlock(struct Event_Block* handlers, IVec3 coords, BlockID oldBlo
 	}
 }
 
-void Event_RaiseMove(struct Event_PointerMove* handlers, int idx, int xDelta, int yDelta) {
-	int i;
-	for (i = 0; i < handlers->Count; i++) {
-		handlers->Handlers[i](handlers->Objs[i], idx, xDelta, yDelta);
-	}
-}
-
 void Event_RaiseChat(struct Event_Chat* handlers, const cc_string* msg, int msgType) {
 	int i;
 	for (i = 0; i < handlers->Count; i++) {

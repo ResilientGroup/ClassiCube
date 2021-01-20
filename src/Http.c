@@ -6,8 +6,9 @@
 #include "Stream.h"
 #include "Game.h"
 #include "Utils.h"
+#include "Options.h"
 
-static cc_bool httpsOnly;
+static cc_bool httpsOnly, httpOnly;
 /* Frees data from a HTTP request. */
 static void HttpRequest_Free(struct HttpRequest* request) {
 	Mem_Free(request->data);
@@ -119,7 +120,8 @@ static void Http_WorkerStop(void);
 /* Adds a req to the list of pending requests, waking up worker thread if needed. */
 static int Http_Add(const cc_string* url, cc_bool priority, cc_uint8 type, const cc_string* lastModified,
 					const cc_string* etag, const void* data, cc_uint32 size, struct StringsBuffer* cookies) {
-	static const cc_string http = String_FromConst("http://");
+	static const cc_string https = String_FromConst("https://");
+	static const cc_string http  = String_FromConst("http://");
 	struct HttpRequest req = { 0 };
 
 	String_CopyToRawArray(req.url, url);
@@ -132,6 +134,11 @@ static int Http_Add(const cc_string* url, cc_bool priority, cc_uint8 type, const
 	if (httpsOnly) {
 		cc_string url_ = String_FromRawArray(req.url);
 		if (String_CaselessStarts(&url_, &http)) String_InsertAt(&url_, 4, 's');
+	}
+	/* Change https:// to http:// if required */
+	if (httpOnly) {
+		cc_string url_ = String_FromRawArray(req.url);
+		if (String_CaselessStarts(&url_, &https)) String_DeleteAt(&url_, 4);
 	}
 	
 	if (lastModified) {
@@ -338,7 +345,7 @@ static void Http_DownloadAsync(struct HttpRequest* req) {
 
 	String_InitArray(url, urlBuffer);
 	Http_BeginRequest(req, &url);
-	Platform_EncodeString(urlStr, &url);
+	Platform_EncodeUtf8(urlStr, &url);
 
 	EM_ASM_({
 		var url       = UTF8ToString($0);
@@ -435,6 +442,7 @@ static void Http_BufferExpanded(struct HttpRequest* req, cc_uint32 read) {
 *#########################################################################################################################*/
 #include "Errors.h"
 #include <stddef.h>
+/* === BEGIN CURL HEADERS === */
 typedef void CURL;
 struct curl_slist;
 typedef int CURLcode;
@@ -473,12 +481,12 @@ static void     (APIENTRY *_curl_easy_cleanup)(CURL* c);
 static void     (APIENTRY *_curl_slist_free_all)(struct curl_slist* l);
 static struct curl_slist* (APIENTRY *_curl_slist_append)(struct curl_slist* l, const char* v);
 static const char* (APIENTRY *_curl_easy_strerror)(CURLcode res);
-/* End of curl headers */
+/* === END CURL HEADERS === */
 
 #if defined CC_BUILD_WIN
 static const cc_string curlLib = String_FromConst("libcurl.dll");
 static const cc_string curlAlt = String_FromConst("curl.dll");
-#elif defined CC_BUILD_OSX
+#elif defined CC_BUILD_DARWIN
 static const cc_string curlLib = String_FromConst("/usr/lib/libcurl.4.dylib");
 static const cc_string curlAlt = String_FromConst("/usr/lib/libcurl.dylib");
 #elif defined CC_BUILD_BSD
@@ -598,7 +606,7 @@ static cc_result Http_BackendDo(struct HttpRequest* req, cc_string* url) {
 	_curl_easy_setopt(curl, CURLOPT_HTTPHEADER, req->meta);
 
 	Http_SetCurlOpts(req);
-	Platform_EncodeString(urlStr, url);
+	Platform_EncodeUtf8(urlStr, url);
 	_curl_easy_setopt(curl, CURLOPT_URL, urlStr);
 
 	if (req->requestType == REQUEST_TYPE_HEAD) {
@@ -998,7 +1006,7 @@ static void WorkerLoop(void) {
 		request.result = Http_BackendDo(&request, &url);
 		end = Stopwatch_Measure();
 
-		elapsed = Stopwatch_ElapsedMilliseconds(beg, end);
+		elapsed = Stopwatch_ElapsedMS(beg, end);
 		Platform_Log4("HTTP: result %i (http %i) in %i ms (%i bytes)",
 					&request.result, &request.statusCode, &elapsed, &request.size);
 		Http_FinishRequest(&request);
@@ -1011,7 +1019,7 @@ static void Http_WorkerInit(void) {
 }
 
 static void Http_WorkerStart(void) {
-	workerThread = Thread_Start(WorkerLoop, false);
+	workerThread = Thread_Start(WorkerLoop);
 }
 static void Http_WorkerSignal(void) { Waitable_Signal(workerWaitable); }
 
@@ -1026,9 +1034,6 @@ static void Http_WorkerStop(void) {
 /*########################################################################################################################*
 *----------------------------------------------------Http public api------------------------------------------------------*
 *#########################################################################################################################*/
-/* Skins were moved to use Amazon S3, so link directly to avoid a pointless redirect */
-#define SKIN_SERVER "http://classicube.s3.amazonaws.com/skin/"
-
 int Http_AsyncGetSkin(const cc_string* skinName) {
 	cc_string url; char urlBuffer[URL_MAX_SIZE];
 	String_InitArray(url, urlBuffer);
@@ -1036,7 +1041,7 @@ int Http_AsyncGetSkin(const cc_string* skinName) {
 	if (Utils_IsUrlPrefix(skinName)) {
 		String_Copy(&url, skinName);
 	} else {
-		String_Format1(&url, SKIN_SERVER "%s.png", skinName);
+		String_Format1(&url, SKINS_SERVER "%s.png", skinName);
 	}
 	return Http_AsyncGetData(&url, false);
 }
@@ -1141,6 +1146,8 @@ void Http_UrlEncodeUtf8(cc_string* dst, const cc_string* src) {
 *#########################################################################################################################*/
 static void OnInit(void) {
 	http_terminate = false;
+	httpOnly = Options_GetBool(OPT_HTTP_ONLY, false);
+
 	Http_WorkerInit();
 	ScheduledTask_Add(30, Http_CleanCacheTask);
 	RequestList_Init(&pendingReqs);

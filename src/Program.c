@@ -43,19 +43,9 @@ int main_imdct() {
 #endif
 
 static void RunGame(void) {
-	static const cc_string defPath = String_FromConst("texpacks/default.zip");
 	cc_string title; char titleBuffer[STRING_SIZE];
-	int width, height;
-
-#ifndef CC_BUILD_WEB
-	if (!File_Exists(&defPath)) {
-		Window_ShowDialog("Missing file",
-			"default.zip is missing, try downloading resources first.\n\nThe game will still run, but without any textures");
-	}
-#endif
-
-	width  = Options_GetInt(OPT_WINDOW_WIDTH,  0, DisplayInfo.Width,  0);
-	height = Options_GetInt(OPT_WINDOW_HEIGHT, 0, DisplayInfo.Height, 0);
+	int width  = Options_GetInt(OPT_WINDOW_WIDTH,  0, DisplayInfo.Width,  0);
+	int height = Options_GetInt(OPT_WINDOW_HEIGHT, 0, DisplayInfo.Height, 0);
 
 	/* No custom resolution has been set */
 	if (width == 0 || height == 0) {
@@ -148,13 +138,13 @@ static int Program_Run(int argc, char** argv) {
 	return 0;
 }
 
-/* NOTE: This is used when compiling with MingW without linking to startup files. */
-/* The final code produced for "main" is our "main" combined with crt's main. (mingw-w64-crt/crt/gccmain.c) */
-/* This immediately crashes the game on startup. */
+/* NOTE: main_real is used for when compiling with MingW without linking to startup files. */
+/*  Normally, the final code produced for "main" is our "main" combined with crt's main */
+/*  (mingw-w64-crt/crt/gccmain.c)) - alas this immediately crashes the game on startup. */
 /* Using main_real instead and setting main_real as the entrypoint fixes the crash. */
 #ifdef CC_NOMAIN
 int main_real(int argc, char** argv) {
-#else
+#else 
 int main(int argc, char** argv) {
 #endif
 	static char ipBuffer[STRING_SIZE];
@@ -170,11 +160,6 @@ int main(int argc, char** argv) {
 #endif
 	Platform_LogConst("Starting " GAME_APP_NAME " ..");
 	String_InitArray(Server.IP, ipBuffer);
-
-	Utils_EnsureDirectory("maps");
-	Utils_EnsureDirectory("texpacks");
-	Utils_EnsureDirectory("texturecache");
-	Utils_EnsureDirectory("plugins");
 	Options_Load();
 
 	res = Program_Run(argc, argv);
@@ -183,10 +168,10 @@ int main(int argc, char** argv) {
 }
 
 /* ClassiCube is just a native library on android, */
-/* unlike other platforms where it is the executable. */
+/*  unlike other platforms where it is the executable. */
 /* As such, we have to hook into the java-side activity, */
-/* which in its onCreate() calls runGameAsync to */
-/* actually run the game on a separate thread. */
+/*  which in its onCreate() calls runGameAsync to */
+/*  actually run the game on a separate thread. */
 #ifdef CC_BUILD_ANDROID
 static void android_main(void) {
 	Platform_LogConst("Main loop started!");
@@ -194,10 +179,13 @@ static void android_main(void) {
 }
 
 static void JNICALL java_runGameAsync(JNIEnv* env, jobject instance) {
+	void* thread;
 	App_Instance = (*env)->NewGlobalRef(env, instance);
 	/* TODO: Do we actually need to remove that global ref later? */
+
 	Platform_LogConst("Running game async!");
-	Thread_Start(android_main, true);
+	thread = Thread_Start(android_main);
+	Thread_Detach(thread);
 }
 
 static const JNINativeMethod methods[1] = {

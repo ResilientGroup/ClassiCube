@@ -716,7 +716,7 @@ struct SysFont {
 	cc_uint16 widths[256]; /* cached width of each character glyph */
 	FT_BitmapGlyph glyphs[256];        /* cached glyphs */
 	FT_BitmapGlyph shadow_glyphs[256]; /* cached glyphs (for back layer shadow) */
-#ifdef CC_BUILD_OSX
+#ifdef CC_BUILD_DARWIN
 	char filename[FILENAME_SIZE + 1];
 #endif
 };
@@ -760,7 +760,7 @@ static cc_result SysFont_Init(const cc_string* path, struct SysFont* font, FT_Op
 	cc_file file;
 	cc_uint32 size;
 	cc_result res;
-#ifdef CC_BUILD_OSX
+#ifdef CC_BUILD_DARWIN
 	cc_string filename;
 #endif
 
@@ -787,7 +787,7 @@ static cc_result SysFont_Init(const cc_string* path, struct SysFont* font, FT_Op
 	Stream_ReadonlyBuffered(&font->src, &font->file, font->buffer, sizeof(font->buffer));
 
 	/* For OSX font suitcase files */
-#ifdef CC_BUILD_OSX
+#ifdef CC_BUILD_DARWIN
 	String_InitArray_NT(filename, font->filename);
 	String_Copy(&filename, path);
 	font->filename[filename.length] = '\0';
@@ -832,13 +832,11 @@ static void SysFonts_Update(void) {
 }
 
 static void SysFonts_Load(void) {
-	static const cc_string cachePath = String_FromConst(FONT_CACHE_FILE);
-	if (!File_Exists(&cachePath)) {
-		Window_ShowDialog("One time load", "Initialising font cache, this can take several seconds.");
-	}
-
 	EntryList_UNSAFE_Load(&font_list, FONT_CACHE_FILE);
-	if (!font_list.count) SysFonts_Update();
+	if (font_list.count) return;
+	
+	Window_ShowDialog("One time load", "Initialising font cache, this can take several seconds.");
+	SysFonts_Update();
 }
 
 /* Some language-specific fonts don't support English letters */
@@ -912,7 +910,7 @@ void SysFonts_Register(const cc_string* path) {
 
 	/* if font is already known, skip it */
 	for (i = 0; i < font_list.count; i++) {
-		entry = StringsBuffer_UNSAFE_Get(&font_list, i);
+		StringsBuffer_UNSAFE_GetRaw(&font_list, i, &entry);
 		String_UNSAFE_Separate(&entry, '=', &name, &value);
 
 		String_UNSAFE_Separate(&value, ',', &fontPath, &index);
@@ -947,7 +945,7 @@ void Font_GetNames(struct StringsBuffer* buffer) {
 	SysFonts_Update();
 
 	for (i = 0; i < font_list.count; i++) {
-		entry = StringsBuffer_UNSAFE_Get(&font_list, i);
+		StringsBuffer_UNSAFE_GetRaw(&font_list, i, &entry);
 		String_UNSAFE_Separate(&entry, '=', &name, &path);
 
 		/* only want Regular fonts here */

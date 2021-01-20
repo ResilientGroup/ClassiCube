@@ -27,12 +27,11 @@
 
 #define Socket__Error() WSAGetLastError()
 static HANDLE heap;
-static void Platform_DecodeString(cc_string* dst, const void* data, int len);
-
 const cc_result ReturnCode_FileShareViolation = ERROR_SHARING_VIOLATION;
 const cc_result ReturnCode_FileNotFound     = ERROR_FILE_NOT_FOUND;
 const cc_result ReturnCode_SocketInProgess  = WSAEINPROGRESS;
 const cc_result ReturnCode_SocketWouldBlock = WSAEWOULDBLOCK;
+const cc_result ReturnCode_DirectoryExists  = ERROR_ALREADY_EXISTS;
 #elif defined CC_BUILD_POSIX
 /* POSIX can be shared between Linux/BSD/macOS */
 #include <errno.h>
@@ -60,12 +59,15 @@ const cc_result ReturnCode_FileShareViolation = 1000000000; /* TODO: not used ap
 const cc_result ReturnCode_FileNotFound     = ENOENT;
 const cc_result ReturnCode_SocketInProgess  = EINPROGRESS;
 const cc_result ReturnCode_SocketWouldBlock = EWOULDBLOCK;
+const cc_result ReturnCode_DirectoryExists  = EEXIST;
 #endif
 /* Platform specific include files (Try to share for UNIX-ish) */
-#if defined CC_BUILD_OSX
+#if defined CC_BUILD_DARWIN
 #include <mach/mach_time.h>
 #include <mach-o/dyld.h>
+#if defined CC_BUILD_MACOS
 #include <ApplicationServices/ApplicationServices.h>
+#endif
 #elif defined CC_BUILD_SOLARIS
 #include <sys/filio.h>
 #elif defined CC_BUILD_BSD
@@ -202,7 +204,7 @@ cc_uint64 Stopwatch_ElapsedMicroseconds(cc_uint64 beg, cc_uint64 end) {
 	return ((end - beg) * sw_freqMul) / sw_freqDiv;
 }
 
-int Stopwatch_ElapsedMilliseconds(cc_uint64 beg, cc_uint64 end) {
+int Stopwatch_ElapsedMS(cc_uint64 beg, cc_uint64 end) {
 	cc_uint64 raw = Stopwatch_ElapsedMicroseconds(beg, end);
 	if (raw > Int32_MaxValue) return Int32_MaxValue / 1000;
 	return (int)raw / 1000;
@@ -316,7 +318,7 @@ cc_uint64 Stopwatch_Measure(void) {
 	/* time is a milliseconds double */
 	return (cc_uint64)(emscripten_get_now() * 1000);
 }
-#elif defined CC_BUILD_OSX
+#elif defined CC_BUILD_DARWIN
 cc_uint64 Stopwatch_Measure(void) { return mach_absolute_time(); }
 #elif defined CC_BUILD_SOLARIS
 cc_uint64 Stopwatch_Measure(void) { return gethrtime(); }
@@ -334,38 +336,32 @@ cc_uint64 Stopwatch_Measure(void) {
 *-----------------------------------------------------Directory/File------------------------------------------------------*
 *#########################################################################################################################*/
 #if defined CC_BUILD_WIN
-int Directory_Exists(const cc_string* path) {
-	TCHAR str[NATIVE_STR_LEN];
-	DWORD attribs;
-
-	Platform_EncodeString(str, path);
-	attribs = GetFileAttributes(str);
-	return attribs != INVALID_FILE_ATTRIBUTES && (attribs & FILE_ATTRIBUTE_DIRECTORY);
-}
-
 cc_result Directory_Create(const cc_string* path) {
-	TCHAR str[NATIVE_STR_LEN];
-	BOOL success;
+	WCHAR str[NATIVE_STR_LEN];
+	cc_result res;
 
-	Platform_EncodeString(str, path);
-	success = CreateDirectory(str, NULL);
-	return success ? 0 : GetLastError();
+	Platform_EncodeUtf16(str, path);
+	if (CreateDirectoryW(str, NULL)) return 0;
+	if ((res = GetLastError()) != ERROR_CALL_NOT_IMPLEMENTED) return res;
+
+	Platform_Utf16ToAnsi(str);
+	return CreateDirectoryA((LPCSTR)str, NULL) ? 0 : GetLastError();
 }
 
 int File_Exists(const cc_string* path) {
-	TCHAR str[NATIVE_STR_LEN];
+	WCHAR str[NATIVE_STR_LEN];
 	DWORD attribs;
 
-	Platform_EncodeString(str, path);
-	attribs = GetFileAttributes(str);
+	Platform_EncodeUtf16(str, path);
+	attribs = GetFileAttributesW(str);
 	return attribs != INVALID_FILE_ATTRIBUTES && !(attribs & FILE_ATTRIBUTE_DIRECTORY);
 }
 
 cc_result Directory_Enum(const cc_string* dirPath, void* obj, Directory_EnumCallback callback) {
 	cc_string path; char pathBuffer[MAX_PATH + 10];
-	TCHAR str[NATIVE_STR_LEN];
-	TCHAR* src;
-	WIN32_FIND_DATA entry;
+	WCHAR str[NATIVE_STR_LEN];
+	WCHAR* src;
+	WIN32_FIND_DATAW entry;
 	HANDLE find;
 	cc_result res;	
 	int i;
@@ -373,9 +369,9 @@ cc_result Directory_Enum(const cc_string* dirPath, void* obj, Directory_EnumCall
 	/* Need to append \* to search for files in directory */
 	String_InitArray(path, pathBuffer);
 	String_Format1(&path, "%s\\*", dirPath);
-	Platform_EncodeString(str, &path);
+	Platform_EncodeUtf16(str, &path);
 	
-	find = FindFirstFile(str, &entry);
+	find = FindFirstFileW(str, &entry);
 	if (find == INVALID_HANDLE_VALUE) return GetLastError();
 
 	do {
@@ -398,36 +394,44 @@ cc_result Directory_Enum(const cc_string* dirPath, void* obj, Directory_EnumCall
 		} else {
 			callback(&path, obj);
 		}
-	}  while (FindNextFile(find, &entry));
+	}  while (FindNextFileW(find, &entry));
 
 	res = GetLastError(); /* return code from FindNextFile */
 	FindClose(find);
 	return res == ERROR_NO_MORE_FILES ? 0 : GetLastError();
 }
 
-static cc_result File_Do(cc_file* file, const cc_string* path, DWORD access, DWORD createMode) {
-	TCHAR str[NATIVE_STR_LEN];
-	Platform_EncodeString(str, path);
-	*file = CreateFile(str, access, FILE_SHARE_READ, NULL, createMode, 0, NULL);
+static cc_result DoFile(cc_file* file, const cc_string* path, DWORD access, DWORD createMode) {
+	WCHAR str[NATIVE_STR_LEN];
+	cc_result res;
+	Platform_EncodeUtf16(str, path);
+
+	*file = CreateFileW(str, access, FILE_SHARE_READ, NULL, createMode, 0, NULL);
+	if (*file && *file != INVALID_HANDLE_VALUE) return 0;
+	if ((res = GetLastError()) != ERROR_CALL_NOT_IMPLEMENTED) return res;
+
+	/* Windows 9x does not support W API functions */
+	Platform_Utf16ToAnsi(str);
+	*file = CreateFileA((LPCSTR)str, access, FILE_SHARE_READ, NULL, createMode, 0, NULL);
 	return *file != INVALID_HANDLE_VALUE ? 0 : GetLastError();
 }
 
 cc_result File_Open(cc_file* file, const cc_string* path) {
-	return File_Do(file, path, GENERIC_READ, OPEN_EXISTING);
+	return DoFile(file, path, GENERIC_READ, OPEN_EXISTING);
 }
 cc_result File_Create(cc_file* file, const cc_string* path) {
-	return File_Do(file, path, GENERIC_WRITE | GENERIC_READ, CREATE_ALWAYS);
+	return DoFile(file, path, GENERIC_WRITE | GENERIC_READ, CREATE_ALWAYS);
 }
 cc_result File_OpenOrCreate(cc_file* file, const cc_string* path) {
-	return File_Do(file, path, GENERIC_WRITE | GENERIC_READ, OPEN_ALWAYS);
+	return DoFile(file, path, GENERIC_WRITE | GENERIC_READ, OPEN_ALWAYS);
 }
 
-cc_result File_Read(cc_file file, cc_uint8* data, cc_uint32 count, cc_uint32* bytesRead) {
+cc_result File_Read(cc_file file, void* data, cc_uint32 count, cc_uint32* bytesRead) {
 	BOOL success = ReadFile(file, data, count, bytesRead, NULL);
 	return success ? 0 : GetLastError();
 }
 
-cc_result File_Write(cc_file file, const cc_uint8* data, cc_uint32 count, cc_uint32* bytesWrote) {
+cc_result File_Write(cc_file file, const void* data, cc_uint32 count, cc_uint32* bytesWrote) {
 	BOOL success = WriteFile(file, data, count, bytesWrote, NULL);
 	return success ? 0 : GetLastError();
 }
@@ -452,16 +456,9 @@ cc_result File_Length(cc_file file, cc_uint32* len) {
 	return *len != INVALID_FILE_SIZE ? 0 : GetLastError();
 }
 #elif defined CC_BUILD_POSIX
-int Directory_Exists(const cc_string* path) {
-	char str[NATIVE_STR_LEN];
-	struct stat sb;
-	Platform_EncodeString(str, path);
-	return stat(str, &sb) == 0 && S_ISDIR(sb.st_mode);
-}
-
 cc_result Directory_Create(const cc_string* path) {
 	char str[NATIVE_STR_LEN];
-	Platform_EncodeString(str, path);
+	Platform_EncodeUtf8(str, path);
 	/* read/write/search permissions for owner and group, and with read/search permissions for others. */
 	/* TODO: Is the default mode in all cases */
 	return mkdir(str, S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH) == -1 ? errno : 0;
@@ -470,7 +467,7 @@ cc_result Directory_Create(const cc_string* path) {
 int File_Exists(const cc_string* path) {
 	char str[NATIVE_STR_LEN];
 	struct stat sb;
-	Platform_EncodeString(str, path);
+	Platform_EncodeUtf8(str, path);
 	return stat(str, &sb) == 0 && S_ISREG(sb.st_mode);
 }
 
@@ -482,7 +479,7 @@ cc_result Directory_Enum(const cc_string* dirPath, void* obj, Directory_EnumCall
 	char* src;
 	int len, res;
 
-	Platform_EncodeString(str, dirPath);
+	Platform_EncodeUtf8(str, dirPath);
 	dirPtr = opendir(str);
 	if (!dirPtr) return errno;
 
@@ -520,7 +517,7 @@ cc_result Directory_Enum(const cc_string* dirPath, void* obj, Directory_EnumCall
 
 static cc_result File_Do(cc_file* file, const cc_string* path, int mode) {
 	char str[NATIVE_STR_LEN];
-	Platform_EncodeString(str, path);
+	Platform_EncodeUtf8(str, path);
 	*file = open(str, mode, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
 	return *file == -1 ? errno : 0;
 }
@@ -535,12 +532,12 @@ cc_result File_OpenOrCreate(cc_file* file, const cc_string* path) {
 	return File_Do(file, path, O_RDWR | O_CREAT);
 }
 
-cc_result File_Read(cc_file file, cc_uint8* data, cc_uint32 count, cc_uint32* bytesRead) {
+cc_result File_Read(cc_file file, void* data, cc_uint32 count, cc_uint32* bytesRead) {
 	*bytesRead = read(file, data, count);
 	return *bytesRead == -1 ? errno : 0;
 }
 
-cc_result File_Write(cc_file file, const cc_uint8* data, cc_uint32 count, cc_uint32* bytesWrote) {
+cc_result File_Write(cc_file file, const void* data, cc_uint32 count, cc_uint32* bytesWrote) {
 	*bytesWrote = write(file, data, count);
 	return *bytesWrote == -1 ? errno : 0;
 }
@@ -584,14 +581,12 @@ static DWORD WINAPI ExecThread(void* param) {
 	return 0;
 }
 
-void* Thread_Start(Thread_StartFunc func, cc_bool detach) {
+void* Thread_Start(Thread_StartFunc func) {
 	DWORD threadID;
 	void* handle = CreateThread(NULL, 0, ExecThread, (void*)func, 0, &threadID);
 	if (!handle) {
 		Logger_Abort2(GetLastError(), "Creating thread");
 	}
-
-	if (detach) Thread_Detach(handle);
 	return handle;
 }
 
@@ -620,7 +615,7 @@ void Mutex_Lock(void* handle)   { EnterCriticalSection((CRITICAL_SECTION*)handle
 void Mutex_Unlock(void* handle) { LeaveCriticalSection((CRITICAL_SECTION*)handle); }
 
 void* Waitable_Create(void) {
-	void* handle = CreateEvent(NULL, false, false, NULL);
+	void* handle = CreateEventA(NULL, false, false, NULL);
 	if (!handle) {
 		Logger_Abort2(GetLastError(), "Creating waitable");
 	}
@@ -644,7 +639,7 @@ void Waitable_WaitFor(void* handle, cc_uint32 milliseconds) {
 #elif defined CC_BUILD_WEB
 /* No real threading support with emscripten backend */
 void Thread_Sleep(cc_uint32 milliseconds) { }
-void* Thread_Start(Thread_StartFunc func, cc_bool detach) { func(); return NULL; }
+void* Thread_Start(Thread_StartFunc func) { func(); return NULL; }
 void Thread_Detach(void* handle) { }
 void Thread_Join(void* handle) { }
 
@@ -679,12 +674,10 @@ static void* ExecThread(void* param) {
 }
 #endif
 
-void* Thread_Start(Thread_StartFunc func, cc_bool detach) {
+void* Thread_Start(Thread_StartFunc func) {
 	pthread_t* ptr = (pthread_t*)Mem_Alloc(1, sizeof(pthread_t), "thread");
 	int res = pthread_create(ptr, NULL, ExecThread, (void*)func);
 	if (res) Logger_Abort2(res, "Creating thread");
-
-	if (detach) Thread_Detach(ptr);
 	return ptr;
 }
 
@@ -790,8 +783,12 @@ void Waitable_WaitFor(void* handle, cc_uint32 milliseconds) {
 	/* absolute time for some silly reason */
 	ts.tv_sec  = tv.tv_sec + milliseconds / 1000;
 	ts.tv_nsec = 1000 * (tv.tv_usec + 1000 * (milliseconds % 1000));
-	ts.tv_sec += ts.tv_nsec / NS_PER_SEC;
-	ts.tv_nsec %= NS_PER_SEC;
+
+	/* statement above might exceed max nsec, so adjust for that */
+	while (ts.tv_nsec >= NS_PER_SEC) {
+		ts.tv_sec++;
+		ts.tv_nsec -= NS_PER_SEC;
+	}
 
 	Mutex_Lock(&ptr->mutex);
 	if (!ptr->signalled) {
@@ -821,15 +818,15 @@ void Platform_LoadSysFonts(void) {
 	int i;
 #if defined CC_BUILD_WIN
 	char winFolder[FILENAME_SIZE];
-	TCHAR winTmp[FILENAME_SIZE];
+	WCHAR winTmp[FILENAME_SIZE];
 	UINT winLen;
 	/* System folder path may not be C:/Windows */
 	cc_string dirs[1];
 	String_InitArray(dirs[0], winFolder);
 
-	winLen = GetWindowsDirectory(winTmp, FILENAME_SIZE);
+	winLen = GetWindowsDirectoryW(winTmp, FILENAME_SIZE);
 	if (winLen) {
-		Platform_DecodeString(&dirs[0], winTmp, winLen);
+		String_AppendUtf16(&dirs[0], winTmp, winLen * 2);
 	} else {
 		String_AppendConst(&dirs[0], "C:/Windows");
 	}
@@ -851,7 +848,7 @@ void Platform_LoadSysFonts(void) {
 	static const cc_string dirs[1] = {
 		String_FromConst("/system/data/fonts")
 	};
-#elif defined CC_BUILD_OSX
+#elif defined CC_BUILD_DARWIN
 	static const cc_string dirs[2] = {
 		String_FromConst("/System/Library/Fonts"),
 		String_FromConst("/Library/Fonts")
@@ -983,7 +980,7 @@ cc_result Socket_Poll(cc_socket s, int mode, cc_bool* success) {
 
 	*success = set.fd_count != 0; return 0;
 }
-#elif defined CC_BUILD_OSX
+#elif defined CC_BUILD_DARWIN
 /* poll is broken on old OSX apparently https://daniel.haxx.se/docs/poll-vs-select.html */
 cc_result Socket_Poll(cc_socket s, int mode, cc_bool* success) {
 	fd_set set;
@@ -1024,29 +1021,36 @@ cc_result Socket_Poll(cc_socket s, int mode, cc_bool* success) {
 *-----------------------------------------------------Process/Module------------------------------------------------------*
 *#########################################################################################################################*/
 #if defined CC_BUILD_WIN
-static cc_result Process_RawStart(const TCHAR* path, TCHAR* args) {
-	STARTUPINFO si = { 0 };
+static cc_result Process_RawStart(WCHAR* path, WCHAR* args) {
+	STARTUPINFOW si = { 0 };
 	PROCESS_INFORMATION pi = { 0 };
-	BOOL ok;
+	cc_result res;
+	si.cb = sizeof(STARTUPINFOW);
 
-	si.cb = sizeof(STARTUPINFO);
-	ok = CreateProcess(path, args, NULL, NULL, false, 0, NULL, NULL, &si, &pi);
-	if (!ok) return GetLastError();
+	if (CreateProcessW(path, args, NULL, NULL, 
+			false, 0, NULL, NULL, &si, &pi)) goto success;
+	//if ((res = GetLastError()) != ERROR_CALL_NOT_IMPLEMENTED) return res;
 
-	/* Don't leak memory for proess return code */
+	//Platform_Utf16ToAnsi(path);
+	//if (CreateProcessA((LPCSTR)path, args, NULL, NULL, 
+	//		false, 0, NULL, NULL, &si, &pi)) goto success;
+	return GetLastError();
+
+success:
+	/* Don't leak memory for process return code */
 	CloseHandle(pi.hProcess);
 	CloseHandle(pi.hThread);
 	return 0;
 }
 
-static cc_result Process_RawGetExePath(TCHAR* path, int* len) {
-	*len = GetModuleFileName(NULL, path, NATIVE_STR_LEN);
+static cc_result Process_RawGetExePath(WCHAR* path, int* len) {
+	*len = GetModuleFileNameW(NULL, path, NATIVE_STR_LEN);
 	return *len ? 0 : GetLastError();
 }
 
 cc_result Process_StartGame(const cc_string* args) {
 	cc_string argv; char argvBuffer[NATIVE_STR_LEN];
-	TCHAR raw[NATIVE_STR_LEN], path[NATIVE_STR_LEN + 1];
+	WCHAR raw[NATIVE_STR_LEN], path[NATIVE_STR_LEN + 1];
 	int len;
 
 	cc_result res = Process_RawGetExePath(path, &len);
@@ -1055,15 +1059,15 @@ cc_result Process_StartGame(const cc_string* args) {
 
 	String_InitArray(argv, argvBuffer);
 	String_Format1(&argv, "ClassiCube.exe %s", args);
-	Platform_EncodeString(raw, &argv);
+	Platform_EncodeUtf16(raw, &argv);
 	return Process_RawStart(path, raw);
 }
 void Process_Exit(cc_result code) { ExitProcess(code); }
 
 void Process_StartOpen(const cc_string* args) {
-	TCHAR str[NATIVE_STR_LEN];
-	Platform_EncodeString(str, args);
-	ShellExecute(NULL, NULL, str, NULL, NULL, SW_SHOWNORMAL);
+	WCHAR str[NATIVE_STR_LEN];
+	Platform_EncodeUtf16(str, args);
+	ShellExecuteW(NULL, NULL, str, NULL, NULL, SW_SHOWNORMAL);
 }
 #elif defined CC_BUILD_WEB
 cc_result Process_StartGame(const cc_string* args) { return ERR_NOT_SUPPORTED; }
@@ -1071,7 +1075,7 @@ void Process_Exit(cc_result code) { exit(code); }
 
 void Process_StartOpen(const cc_string* args) {
 	char str[NATIVE_STR_LEN];
-	Platform_EncodeString(str, args);
+	Platform_EncodeUtf8(str, args);
 	EM_ASM_({ window.open(UTF8ToString($0)); }, str);
 }
 #elif defined CC_BUILD_ANDROID
@@ -1114,7 +1118,7 @@ cc_result Process_StartGame(const cc_string* args) {
 	if (res) return res;
 	path[len] = '\0';
 
-	Platform_EncodeString(raw, args);
+	Platform_EncodeUtf8(raw, args);
 	argv[0] = path; argv[1] = raw;
 
 	/* need to null-terminate multiple arguments */
@@ -1134,13 +1138,13 @@ cc_result Process_StartGame(const cc_string* args) {
 void Process_Exit(cc_result code) { exit(code); }
 
 /* Opening browser/starting shell is not really standardised */
-#if defined CC_BUILD_OSX
+#if defined CC_BUILD_MACOS
 void Process_StartOpen(const cc_string* args) {
 	UInt8 str[NATIVE_STR_LEN];
 	CFURLRef urlCF;
 	int len;
 	
-	len   = Platform_EncodeString(str, args);
+	len   = Platform_EncodeUtf8(str, args);
 	urlCF = CFURLCreateWithBytes(kCFAllocatorDefault, str, len, kCFStringEncodingUTF8, NULL);
 	LSOpenCFURLRef(urlCF, NULL);
 	CFRelease(urlCF);
@@ -1149,7 +1153,7 @@ void Process_StartOpen(const cc_string* args) {
 void Process_StartOpen(const cc_string* args) {
 	char str[NATIVE_STR_LEN];
 	char* cmd[3];
-	Platform_EncodeString(str, args);
+	Platform_EncodeUtf8(str, args);
 
 	cmd[0] = "open"; cmd[1] = str; cmd[2] = NULL;
 	Process_RawStart("open", cmd);
@@ -1158,7 +1162,7 @@ void Process_StartOpen(const cc_string* args) {
 void Process_StartOpen(const cc_string* args) {
 	char str[NATIVE_STR_LEN];
 	char* cmd[3];
-	Platform_EncodeString(str, args);
+	Platform_EncodeUtf8(str, args);
 
 	/* TODO: Can xdg-open be used on original Solaris, or is it just an OpenIndiana thing */
 	cmd[0] = "xdg-open"; cmd[1] = str; cmd[2] = NULL;
@@ -1167,7 +1171,7 @@ void Process_StartOpen(const cc_string* args) {
 #endif
 
 /* Retrieving exe path is completely OS dependant */
-#if defined CC_BUILD_OSX
+#if defined CC_BUILD_DARWIN
 static cc_result Process_RawGetExePath(char* path, int* len) {
 	Mem_Set(path, '\0', NATIVE_STR_LEN);
 	cc_uint32 size = NATIVE_STR_LEN;
@@ -1267,8 +1271,8 @@ cc_bool Updater_Clean(void) {
 }
 
 cc_result Updater_Start(const char** action) {
-	TCHAR path[NATIVE_STR_LEN + 1];
-	TCHAR args[2] = { 'a', '\0' }; /* don't actually care about arguments */
+	WCHAR path[NATIVE_STR_LEN + 1];
+	WCHAR args[2] = { 'a', '\0' }; /* don't actually care about arguments */
 	cc_result res;
 	int len = 0;
 
@@ -1277,16 +1281,16 @@ cc_result Updater_Start(const char** action) {
 	path[len] = '\0';
 
 	*action = "Moving executable to CC_prev.exe";
-	if (!MoveFileEx(path, UPDATE_TMP, MOVEFILE_REPLACE_EXISTING)) return GetLastError();
+	if (!MoveFileExW(path, UPDATE_TMP, MOVEFILE_REPLACE_EXISTING)) return GetLastError();
 	*action = "Replacing executable";
-	if (!MoveFileEx(UPDATE_SRC, path, MOVEFILE_REPLACE_EXISTING)) return GetLastError();
+	if (!MoveFileExW(UPDATE_SRC, path, MOVEFILE_REPLACE_EXISTING)) return GetLastError();
 
 	*action = "Restarting game";
 	return Process_RawStart(path, args);
 }
 
 cc_result Updater_GetBuildTime(cc_uint64* timestamp) {
-	TCHAR path[NATIVE_STR_LEN + 1];
+	WCHAR path[NATIVE_STR_LEN + 1];
 	cc_file file;
 	FILETIME ft;
 	cc_uint64 raw;
@@ -1296,7 +1300,7 @@ cc_result Updater_GetBuildTime(cc_uint64* timestamp) {
 	if (res) return res;
 	path[len] = '\0';
 
-	file = CreateFile(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+	file = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
 	if (file == INVALID_HANDLE_VALUE) return GetLastError();
 
 	if (GetFileTime(file, NULL, NULL, &ft)) {
@@ -1365,7 +1369,7 @@ const char* const Updater_OGL = "ClassiCube.rpi";
 #else
 const char* const Updater_OGL = NULL;
 #endif
-#elif defined CC_BUILD_OSX
+#elif defined CC_BUILD_DARWIN
 #if __x86_64__
 const char* const Updater_OGL = "ClassiCube.64.osx";
 #elif __i386__
@@ -1436,9 +1440,9 @@ cc_result Updater_SetNewBuildTime(cc_uint64 timestamp) {
 const cc_string DynamicLib_Ext = String_FromConst(".dll");
 
 void* DynamicLib_Load2(const cc_string* path) {
-	TCHAR str[NATIVE_STR_LEN];
-	Platform_EncodeString(str, path);
-	return LoadLibrary(str);
+	WCHAR str[NATIVE_STR_LEN];
+	Platform_EncodeUtf16(str, path);
+	return LoadLibraryW(str);
 }
 
 void* DynamicLib_Get2(void* lib, const char* name) {
@@ -1461,7 +1465,7 @@ const cc_string DynamicLib_Ext = String_FromConst(".dylib");
 
 void* DynamicLib_Load2(const cc_string* path) {
 	char str[NATIVE_STR_LEN];
-	Platform_EncodeString(str, path);
+	Platform_EncodeUtf8(str, path);
 	return NSAddImage(str, NSADDIMAGE_OPTION_WITH_SEARCHING | 
 							NSADDIMAGE_OPTION_RETURN_ON_ERROR);
 }
@@ -1495,7 +1499,7 @@ cc_bool DynamicLib_DescribeError(cc_string* dst) {
 #include <dlfcn.h>
 /* TODO: Should we use .bundle instead of .dylib? */
 
-#ifdef CC_BUILD_OSX
+#ifdef CC_BUILD_DARWIN
 const cc_string DynamicLib_Ext = String_FromConst(".dylib");
 #else
 const cc_string DynamicLib_Ext = String_FromConst(".so");
@@ -1503,7 +1507,7 @@ const cc_string DynamicLib_Ext = String_FromConst(".so");
 
 void* DynamicLib_Load2(const cc_string* path) {
 	char str[NATIVE_STR_LEN];
-	Platform_EncodeString(str, path);
+	Platform_EncodeUtf8(str, path);
 	return dlopen(str, RTLD_NOW);
 }
 
@@ -1545,8 +1549,8 @@ cc_bool DynamicLib_GetAll(void* lib, const struct DynamicLibSym* syms, int count
 *--------------------------------------------------------Platform---------------------------------------------------------*
 *#########################################################################################################################*/
 #if defined CC_BUILD_WIN
-int Platform_EncodeString(void* data, const cc_string* src) {
-	TCHAR* dst = (TCHAR*)data;
+int Platform_EncodeUtf16(void* data, const cc_string* src) {
+	WCHAR* dst = (WCHAR*)data;
 	int i;
 	if (src->length > FILENAME_SIZE) Logger_Abort("String too long to expand");
 
@@ -1557,13 +1561,12 @@ int Platform_EncodeString(void* data, const cc_string* src) {
 	return src->length * 2;
 }
 
-/* Attempts to append all characters from the platform specific encoded data to the given string. */
-static void Platform_DecodeString(cc_string* dst, const void* data, int len) {
-#ifdef UNICODE
-	String_AppendUtf16(dst, (const cc_unichar*)data, len * 2);
-#else
-	String_DecodeCP1252(dst, (const cc_uint8*)data, len);
-#endif
+void Platform_Utf16ToAnsi(void* data) {
+	WCHAR* src = (WCHAR*)data;
+	char* dst  = (char*)data;
+
+	while (*src) { *dst++ = *src++; }
+	*dst = '\0';
 }
 
 static void Platform_InitStopwatch(void) {
@@ -1612,41 +1615,16 @@ void Platform_Free(void) {
 	HeapDestroy(heap);
 }
 
-cc_result Platform_Encrypt(const cc_string* key, const void* data, int len, cc_string* dst) {
-	DATA_BLOB input, output;
-	int i;
-	input.cbData = len; input.pbData = (BYTE*)data;
-	if (!CryptProtectData(&input, NULL, NULL, NULL, NULL, 0, &output)) return GetLastError();
-
-	for (i = 0; i < output.cbData; i++) {
-		String_Append(dst, output.pbData[i]);
-	}
-	LocalFree(output.pbData);
-	return 0;
-}
-cc_result Platform_Decrypt(const cc_string* key, const void* data, int len, cc_string* dst) {
-	DATA_BLOB input, output;
-	int i;
-	input.cbData = len; input.pbData = (BYTE*)data;
-	if (!CryptUnprotectData(&input, NULL, NULL, NULL, NULL, 0, &output)) return GetLastError();
-
-	for (i = 0; i < output.cbData; i++) {
-		String_Append(dst, output.pbData[i]);
-	}
-	LocalFree(output.pbData);
-	return 0;
-}
-
 cc_bool Platform_DescribeErrorExt(cc_result res, cc_string* dst, void* lib) {
-	TCHAR chars[NATIVE_STR_LEN];
+	WCHAR chars[NATIVE_STR_LEN];
 	DWORD flags = FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS;
 	if (lib) flags |= FORMAT_MESSAGE_FROM_HMODULE;
 
-	res = FormatMessage(flags, lib, res, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), 
-						chars, NATIVE_STR_LEN, NULL);
+	res = FormatMessageW(flags, lib, res, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), 
+						 chars, NATIVE_STR_LEN, NULL);
 	if (!res) return false;
 
-	Platform_DecodeString(dst, chars, res);
+	String_AppendUtf16(dst, chars, res * 2);
 	return true;
 }
 
@@ -1654,7 +1632,7 @@ cc_bool Platform_DescribeError(cc_result res, cc_string* dst) {
 	return Platform_DescribeErrorExt(res, dst, NULL);
 }
 #elif defined CC_BUILD_POSIX
-int Platform_EncodeString(void* data, const cc_string* src) {
+int Platform_EncodeUtf8(void* data, const cc_string* src) {
 	cc_uint8* dst = (cc_uint8*)data;
 	cc_uint8* cur;
 	int i, len = 0;
@@ -1678,24 +1656,6 @@ static void Platform_InitPosix(void) {
 }
 void Platform_Free(void) { }
 
-cc_result Platform_Encrypt(const cc_string* key, const void* data, int len, cc_string* dst) {
-	/* TODO: Is there a similar API for macOS/Linux? */
-	/* Fallback to NOT SECURE XOR. Prevents simple reading from options.txt */
-	const cc_uint8* src = data;
-	cc_uint8 c;
-	int i;
-
-	for (i = 0; i < len; i++) {
-		c = (cc_uint8)(src[i] ^ key->buffer[i % key->length] ^ 0x43);
-		String_Append(dst, c);
-	}
-	return 0;
-}
-cc_result Platform_Decrypt(const cc_string* key, const void* data, int len, cc_string* dst) {
-	/* TODO: Is there a similar API for macOS/Linux? */
-	return Platform_Encrypt(key, data, len, dst);
-}
-
 cc_bool Platform_DescribeError(cc_result res, cc_string* dst) {
 	char chars[NATIVE_STR_LEN];
 	int len;
@@ -1713,7 +1673,7 @@ cc_bool Platform_DescribeError(cc_result res, cc_string* dst) {
 	return true;
 }
 
-#if defined CC_BUILD_OSX
+#if defined CC_BUILD_DARWIN
 static void Platform_InitStopwatch(void) {
 	mach_timebase_info_data_t tb = { 0 };
 	mach_timebase_info(&tb);
@@ -1724,15 +1684,22 @@ static void Platform_InitStopwatch(void) {
 	sw_freqDiv = (cc_uint64)tb.denom * 1000;
 }
 
-void Platform_Init(void) {
-	ProcessSerialNumber psn; /* TODO: kCurrentProcess */
-	Platform_InitPosix();
-	Platform_InitStopwatch();
-	
-	/* NOTE: Call as soon as possible, otherwise can't click on dialog boxes. */
-	GetCurrentProcess(&psn);
+#if defined CC_BUILD_MACOS
+static void Platform_InitSpecific(void) {
+	ProcessSerialNumber psn = { 0, kCurrentProcess };
+	/* NOTE: Call as soon as possible, otherwise can't click on dialog boxes or create windows */
 	/* NOTE: TransformProcessType is macOS 10.3 or later */
 	TransformProcessType(&psn, kProcessTransformToForegroundApplication);
+}
+#else
+/* Always foreground process on iOS */
+static void Platform_InitSpecific(void) { }
+#endif
+
+void Platform_Init(void) {
+	Platform_InitPosix();
+	Platform_InitStopwatch();
+	Platform_InitSpecific();
 }
 #elif defined CC_BUILD_WEB
 void Platform_Init(void) {
@@ -1776,7 +1743,187 @@ void Platform_Init(void) { Platform_InitPosix(); }
 
 
 /*########################################################################################################################*
-*--------------------------------------------------------Platform---------------------------------------------------------*
+*-------------------------------------------------------Encryption--------------------------------------------------------*
+*#########################################################################################################################*/
+#if defined CC_BUILD_WIN
+cc_result Platform_Encrypt(const cc_string* key, const void* data, int len, cc_string* dst) {
+	DATA_BLOB input, output;
+	int i;
+	input.cbData = len; input.pbData = (BYTE*)data;
+	if (!CryptProtectData(&input, NULL, NULL, NULL, NULL, 0, &output)) return GetLastError();
+
+	for (i = 0; i < output.cbData; i++) {
+		String_Append(dst, output.pbData[i]);
+	}
+	LocalFree(output.pbData);
+	return 0;
+}
+cc_result Platform_Decrypt(const cc_string* key, const void* data, int len, cc_string* dst) {
+	DATA_BLOB input, output;
+	int i;
+	input.cbData = len; input.pbData = (BYTE*)data;
+	if (!CryptUnprotectData(&input, NULL, NULL, NULL, NULL, 0, &output)) return GetLastError();
+
+	for (i = 0; i < output.cbData; i++) {
+		String_Append(dst, output.pbData[i]);
+	}
+	LocalFree(output.pbData);
+	return 0;
+}
+#elif defined CC_BUILD_LINUX || defined CC_BUILD_MACOS
+/* Encrypts data using XTEA block cipher, with OS specific method to get machine-specific key */
+
+static void EncipherBlock(cc_uint32* v, const cc_uint32* key, cc_string* dst) {
+	cc_uint32 v0 = v[0], v1 = v[1], sum = 0, delta = 0x9E3779B9;
+	int i;
+
+    for (i = 0; i < 12; i++) {
+        v0  += (((v1 << 4) ^ (v1 >> 5)) + v1) ^ (sum + key[sum & 3]);
+        sum += delta;
+        v1  += (((v0 << 4) ^ (v0 >> 5)) + v0) ^ (sum + key[(sum>>11) & 3]);
+    }
+    v[0] = v0; v[1] = v1;
+	String_AppendAll(dst, v, 8);
+}
+
+static void DecipherBlock(cc_uint32* v, const cc_uint32* key) {
+	cc_uint32 v0 = v[0], v1 = v[1], delta = 0x9E3779B9, sum = delta * 12;
+	int i;
+
+    for (i = 0; i < 12; i++) {
+        v1  -= (((v0 << 4) ^ (v0 >> 5)) + v0) ^ (sum + key[(sum>>11) & 3]);
+        sum -= delta;
+        v0  -= (((v1 << 4) ^ (v1 >> 5)) + v1) ^ (sum + key[sum & 3]);
+    }
+    v[0] = v0; v[1] = v1;
+}
+
+#define ENC1 0xCC005EC0
+#define ENC2 0x0DA4A0DE 
+#define ENC3 0xC0DED000
+#define MACHINEID_LEN 32
+#define ENC_SIZE 8 /* 2 32 bit ints per block */
+
+/* "b3c5a0d9" --> 0xB3C5A0D9 */
+static void DecodeMachineID(char* tmp, cc_uint8* key) {
+	int hex[MACHINEID_LEN], i;
+	PackedCol_Unhex(tmp, hex, MACHINEID_LEN);
+
+	for (i = 0; i < MACHINEID_LEN / 2; i++) {
+		key[i] = (hex[i * 2] << 4) | hex[i * 2 + 1];
+	}
+}
+
+#if defined CC_BUILD_LINUX
+/* Read /var/lib/dbus/machine-id for the key */
+static void GetMachineID(cc_uint32* key) {
+	const cc_string idFile = String_FromConst("/var/lib/dbus/machine-id");
+	char tmp[MACHINEID_LEN];
+	struct Stream s;
+	int i;
+
+	for (i = 0; i < 4; i++) key[i] = 0;
+	if (Stream_OpenFile(&s, &idFile)) return;
+
+	if (!Stream_Read(&s, tmp, MACHINEID_LEN)) {
+		DecodeMachineID(tmp, (cc_uint8*)key);
+	}
+	s.Close(&s);
+}
+#elif defined CC_BUILD_MACOS
+static void GetMachineID(cc_uint32* key) {
+	io_registry_entry_t registry;
+	CFStringRef uuid;
+	char tmp[MACHINEID_LEN] = { 0 };
+	const char* src;
+	struct Stream s;
+	int i;
+
+	for (i = 0; i < 4; i++) key[i] = 0;
+
+	registry = IORegistryEntryFromPath(kIOMasterPortDefault, "IOService:/");
+	if (!registry) return;
+
+	uuid = IORegistryEntryCreateCFProperty(registry, CFSTR(kIOPlatformUUIDKey), kCFAllocatorDefault, 0);
+	if (uuid && (src = CFStringGetCStringPtr(uuid, kCFStringEncodingUTF8))) {
+		for (i = 0; *src && i < MACHINEID_LEN; src++) {
+			if (*src == '-') continue;
+			tmp[i++] = *src;
+		}
+		DecodeMachineID(tmp, (cc_uint8*)key);	
+	}
+	CFRelease(uuid);
+	IOObjectRelease(registry);
+}
+#endif
+
+cc_result Platform_Encrypt(const cc_string* key_, const void* data, int len, cc_string* dst) {
+	const cc_uint8* src = (const cc_uint8*)data;
+	cc_uint32 header[4], key[4];
+	header[0] = ENC1; header[1] = ENC2;
+	header[2] = ENC3; header[3] = len;
+
+	GetMachineID(key);
+	EncipherBlock(header + 0, key, dst);
+	EncipherBlock(header + 2, key, dst);
+
+	for (; len > 0; len -= ENC_SIZE, src += ENC_SIZE) {
+		header[0] = 0; header[1] = 0;
+		Mem_Copy(header, src, min(len, ENC_SIZE));
+		EncipherBlock(header, key, dst);
+	}
+	return 0;
+}
+cc_result Platform_Decrypt(const cc_string* key__, const void* data, int len, cc_string* dst) {
+	const cc_uint8* src = (const cc_uint8*)data;
+	cc_uint32 header[4], key[4];
+	int dataLen;
+	/* Total size must be >= header size */
+	if (len < 16) return ERR_END_OF_STREAM;
+
+	GetMachineID(key);
+	Mem_Copy(header, src, 16);
+	DecipherBlock(header + 0, key);
+	DecipherBlock(header + 2, key);
+
+	if (header[0] != ENC1 || header[1] != ENC2 || header[2] != ENC3) return ERR_INVALID_ARGUMENT;
+	len -= 16; src += 16;
+
+	if (header[3] > len) return ERR_INVALID_ARGUMENT;
+	dataLen = header[3];
+
+	for (; dataLen > 0; len -= ENC_SIZE, src += ENC_SIZE, dataLen -= ENC_SIZE) {
+		header[0] = 0; header[1] = 0;
+		Mem_Copy(header, src, min(len, ENC_SIZE));
+
+		DecipherBlock(header, key);
+		String_AppendAll(dst, header, min(dataLen, ENC_SIZE));
+	}
+	return 0;
+}
+#elif defined CC_BUILD_POSIX
+cc_result Platform_Encrypt(const cc_string* key, const void* data, int len, cc_string* dst) {
+	/* TODO: Is there a similar API for macOS/Linux? */
+	/* Fallback to NOT SECURE XOR. Prevents simple reading from options.txt */
+	const cc_uint8* src = data;
+	cc_uint8 c;
+	int i;
+
+	for (i = 0; i < len; i++) {
+		c = (cc_uint8)(src[i] ^ key->buffer[i % key->length] ^ 0x43);
+		String_Append(dst, c);
+	}
+	return 0;
+}
+cc_result Platform_Decrypt(const cc_string* key, const void* data, int len, cc_string* dst) {
+	/* TODO: Is there a similar API for macOS/Linux? */
+	return Platform_Encrypt(key, data, len, dst);
+}
+#endif
+
+
+/*########################################################################################################################*
+*-----------------------------------------------------Configuration-------------------------------------------------------*
 *#########################################################################################################################*/
 #if defined CC_BUILD_WIN
 static cc_string Platform_NextArg(STRING_REF cc_string* args) {
@@ -1820,7 +1967,7 @@ int Platform_GetCommandLineArgs(int argc, STRING_REF char** argv, cc_string* arg
 }
 
 cc_result Platform_SetDefaultCurrentDirectory(int argc, char **argv) {
-	TCHAR path[NATIVE_STR_LEN + 1];
+	WCHAR path[NATIVE_STR_LEN + 1];
 	int i, len;
 	cc_result res = Process_RawGetExePath(path, &len);
 	if (res) return res;
@@ -1831,7 +1978,7 @@ cc_result Platform_SetDefaultCurrentDirectory(int argc, char **argv) {
 	}
 
 	path[len] = '\0';
-	return SetCurrentDirectory(path) ? 0 : GetLastError();
+	return SetCurrentDirectoryW(path) ? 0 : GetLastError();
 }
 #elif defined CC_BUILD_WEB
 int Platform_GetCommandLineArgs(int argc, STRING_REF char** argv, cc_string* args) {
@@ -1866,7 +2013,7 @@ int Platform_GetCommandLineArgs(int argc, STRING_REF char** argv, cc_string* arg
 	int i, count;
 	argc--; argv++; /* skip executable path argument */
 
-#ifdef CC_BUILD_OSX
+#ifdef CC_BUILD_DARWIN
 	if (argc) {
 		static const cc_string psn = String_FromConst("-psn_0_");
 		cc_string arg0 = String_FromReadonly(argv[0]);
@@ -1910,7 +2057,7 @@ cc_result Platform_SetDefaultCurrentDirectory(int argc, char **argv) {
 		if (path[i] == '/') break;
 	}
 
-#ifdef CC_BUILD_OSX
+#ifdef CC_BUILD_DARWIN
 	static const cc_string bundle = String_FromConst(".app/Contents/MacOS/");
 	cc_string raw = String_Init(path, len, 0);
 

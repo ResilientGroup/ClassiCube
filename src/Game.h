@@ -2,7 +2,7 @@
 #define CC_GAME_H
 #include "Core.h"
 /* Represents the game and related structures.
-   Copyright 2014-2020 ClassiCube | Licensed under BSD-3
+   Copyright 2014-2021 ClassiCube | Licensed under BSD-3
 */
 
 struct Bitmap;
@@ -42,6 +42,7 @@ extern cc_bool Game_ViewBobbing;
 extern cc_bool Game_BreakableLiquids;
 extern cc_bool Game_ScreenshotRequested;
 extern cc_bool Game_HideGui;
+extern cc_bool Game_DefaultZipMissing;
 
 enum FpsLimitMethod {
 	FPS_LIMIT_VSYNC, FPS_LIMIT_30, FPS_LIMIT_60, FPS_LIMIT_120, FPS_LIMIT_144, FPS_LIMIT_NONE, FPS_LIMIT_COUNT

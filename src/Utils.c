@@ -25,12 +25,11 @@ cc_bool Utils_IsUrlPrefix(const cc_string* value) {
 
 cc_bool Utils_EnsureDirectory(const char* dirName) {
 	cc_string dir = String_FromReadonly(dirName);
-	cc_result res;
-	if (Directory_Exists(&dir)) return true;
+	cc_result res = Directory_Create(&dir);
 
-	res = Directory_Create(&dir);
-	if (res) { Logger_SysWarn2(res, "creating directory", &dir); }
-	return res == 0;
+	if (!res || res == ReturnCode_DirectoryExists) return true;
+	Logger_SysWarn2(res, "creating directory", &dir);
+	return false;
 }
 
 void Utils_UNSAFE_GetFilename(STRING_REF cc_string* path) {
@@ -224,17 +223,17 @@ int Convert_FromBase64(const char* src, int len, cc_uint8* dst) {
 *--------------------------------------------------------EntryList--------------------------------------------------------*
 *#########################################################################################################################*/
 void EntryList_Load(struct StringsBuffer* list, const char* file, char separator, EntryList_Filter filter) {
-	cc_string entry; char entryBuffer[768];
-	cc_string path;  char pathBuffer[FILENAME_SIZE];
+	cc_string entry; char entryBuffer[1024];
+	cc_string path;
 	cc_string key, value;
-	int lineLen;
+	int lineLen, maxLen;
 
 	cc_uint8 buffer[2048];
 	struct Stream stream, buffered;
 	cc_result res;
 
-	String_InitArray(path, pathBuffer);
-	String_AppendConst(&path, file);
+	path   = String_FromReadonly(file);
+	maxLen = list->_lenMask ? list->_lenMask : STRINGSBUFFER_DEF_LEN_MASK;
 	
 	res = Stream_OpenFile(&stream, &path);
 	if (res == ReturnCode_FileNotFound) return;
@@ -258,7 +257,7 @@ void EntryList_Load(struct StringsBuffer* list, const char* file, char separator
 
 		/* Sometimes file becomes corrupted and replaced with NULL */
 		/* If don't prevent this here, client aborts in StringsBuffer_Add */
-		if (entry.length > STRINGSBUFFER_LEN_MASK) {
+		if (entry.length > maxLen) {
 			lineLen      = entry.length;
 			entry.length = 0;
 			String_Format2(&entry, "Skipping very long (%i characters) line in %c, file may be corrupted", &lineLen, file);
@@ -294,8 +293,8 @@ void EntryList_Save(struct StringsBuffer* list, const char* file) {
 	if (res) { Logger_SysWarn2(res, "creating", &path); return; }
 
 	for (i = 0; i < list->count; i++) {
-		entry = StringsBuffer_UNSAFE_Get(list, i);
-		res   = Stream_WriteLine(&stream, &entry);
+		StringsBuffer_UNSAFE_GetRaw(list, i, &entry);
+		res = Stream_WriteLine(&stream, &entry);
 		if (res) { Logger_SysWarn2(res, "writing to", &path); break; }
 	}
 
@@ -317,7 +316,7 @@ cc_bool EntryList_Remove(struct StringsBuffer* list, const cc_string* key, char 
 }
 
 void EntryList_Set(struct StringsBuffer* list, const cc_string* key, const cc_string* value, char separator) {
-	cc_string entry; char entryBuffer[1024];
+	cc_string entry; char entryBuffer[3072];
 	String_InitArray(entry, entryBuffer);
 
 	if (value->length) {
@@ -335,7 +334,7 @@ cc_string EntryList_UNSAFE_Get(struct StringsBuffer* list, const cc_string* key,
 	int i;
 
 	for (i = 0; i < list->count; i++) {
-		curEntry = StringsBuffer_UNSAFE_Get(list, i);
+		StringsBuffer_UNSAFE_GetRaw(list, i, &curEntry);
 		String_UNSAFE_Separate(&curEntry, separator, &curKey, &curValue);
 
 		if (String_CaselessEquals(key, &curKey)) return curValue;
@@ -348,7 +347,7 @@ int EntryList_Find(struct StringsBuffer* list, const cc_string* key, char separa
 	int i;
 
 	for (i = 0; i < list->count; i++) {
-		curEntry = StringsBuffer_UNSAFE_Get(list, i);
+		StringsBuffer_UNSAFE_GetRaw(list, i, &curEntry);
 		String_UNSAFE_Separate(&curEntry, separator, &curKey, &curValue);
 
 		if (String_CaselessEquals(key, &curKey)) return i;

@@ -341,9 +341,14 @@ static void ExtractFromFile(const cc_string* filename) {
 	String_Format1(&path, TEXPACKS_DIR "/%s", filename);
 
 	res = Stream_OpenFile(&stream, &path);
-	if (res) { Logger_SysWarn2(res, "opening", &path); return; }
-	ExtractFrom(&stream, &path);
+	if (res) {
+		/* Game shows a dialog if default.zip is missing */
+		Game_DefaultZipMissing |= res == ReturnCode_FileNotFound
+					&& String_CaselessEquals(filename, &defaultZip);
+		Logger_SysWarn2(res, "opening", &path); return; 
+	}
 
+	ExtractFrom(&stream, &path);
 	res = stream.Close(&stream);
 	if (res) { Logger_SysWarn2(res, "closing", &path); }
 }
@@ -450,6 +455,8 @@ static void OnInit(void) {
 	Event_Register_(&GfxEvents.ContextRecreated, NULL, OnContextRecreated);
 
 	Options_Get(OPT_DEFAULT_TEX_PACK, &defTexPack, "default.zip");
+	Utils_EnsureDirectory("texpacks");
+	Utils_EnsureDirectory("texturecache");
 	TextureCache_Init();
 }
 

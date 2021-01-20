@@ -19,6 +19,7 @@
 #include "Block.h"
 #include "Menus.h"
 #include "World.h"
+#include "Input.h"
 #include "Utils.h"
 
 #define CHAT_MAX_STATUS Array_Elems(Chat_Status)
@@ -39,7 +40,6 @@ int Screen_TPointer(void* s, int id, int x, int y) { return true; }
 
 void Screen_NullFunc(void* screen) { }
 void Screen_NullUpdate(void* screen, double delta) { }
-int  Screen_InputDown(void* screen, int key) { return key < KEY_F1 || key > KEY_F24; }
 
 /* TODO: Remove these */
 struct HUDScreen;
@@ -47,6 +47,7 @@ struct ChatScreen;
 static struct HUDScreen*  Gui_HUD;
 static struct ChatScreen* Gui_Chat;
 
+static cc_bool InventoryScreen_IsHotbarActive(void);
 CC_NOINLINE static cc_bool IsOnlyChatActive(void) {
 	struct Screen* s;
 	int i;
@@ -128,26 +129,16 @@ static void HUDScreen_DrawPosition(struct HUDScreen* s) {
 	Gfx_UpdateDynamicVb_IndexedTris(Models.Vb, vertices, count);
 }
 
-static float HUDScreen_CalcHacksSpeed(void) {
-	struct HacksComp* hacks = &LocalPlayer_Instance.Hacks;
-	float speed = 0;
-	if (!hacks->CanSpeed) return 0;
-
-	if (hacks->HalfSpeeding) speed += hacks->SpeedMultiplier / 2;
-	if (hacks->Speeding)     speed += hacks->SpeedMultiplier;
-	return speed;
-}
-
 static cc_bool HUDScreen_HasHacksChanged(struct HUDScreen* s) {
 	struct HacksComp* hacks = &LocalPlayer_Instance.Hacks;
-	float speed = HUDScreen_CalcHacksSpeed();
+	float speed = HacksComp_CalcSpeedFactor(hacks, hacks->CanSpeed);
 	return speed != s->lastSpeed || Camera.Fov != s->lastFov || s->hacksChanged;
 }
 
 static void HUDScreen_UpdateHackState(struct HUDScreen* s) {
 	cc_string status; char statusBuffer[STRING_SIZE * 2];
 	struct HacksComp* hacks = &LocalPlayer_Instance.Hacks;
-	float speed = HUDScreen_CalcHacksSpeed();
+	float speed = HacksComp_CalcSpeedFactor(hacks, hacks->CanSpeed);
 
 	s->lastSpeed = speed; s->lastFov = Camera.Fov;
 	s->hacksChanged = false;
@@ -214,6 +205,13 @@ static void HUDScreen_ContextRecreated(void* screen) {
 
 static void HUDScreen_BuildMesh(void* screen) { }
 
+static int HUDScreen_LayoutHotbar(void) {
+	struct HUDScreen* s = &HUDScreen_Instance;
+	s->hotbar.scale     = Gui_GetHotbarScale();
+	Widget_Layout(&s->hotbar);
+	return s->hotbar.height;
+}
+
 static void HUDScreen_Layout(void* screen) {
 	struct HUDScreen* s = (struct HUDScreen*)screen;
 	struct TextWidget* line1 = &s->line1;
@@ -235,8 +233,7 @@ static void HUDScreen_Layout(void* screen) {
 		line2->yOffset = posY + s->posAtlas.tex.Height;
 	}
 
-	s->hotbar.scale = Gui_GetHotbarScale();
-	Widget_Layout(&s->hotbar);
+	HUDScreen_LayoutHotbar();
 	Widget_Layout(line2);
 }
 
@@ -245,14 +242,15 @@ static int HUDScreen_KeyDown(void* screen, int key) {
 	return Elem_HandlesKeyDown(&s->hotbar, key);
 }
 
-static int HUDScreen_KeyUp(void* screen, int key) {
+static void HUDScreen_InputUp(void* screen, int key) {
 	struct HUDScreen* s = (struct HUDScreen*)screen;
-	return Elem_HandlesKeyUp(&s->hotbar, key);
+	if (!InventoryScreen_IsHotbarActive()) return;
+	Elem_OnInputUp(&s->hotbar, key);
 }
 
 static int HUDscreen_PointerDown(void* screen, int id, int x, int y) {
 	struct HUDScreen* s = (struct HUDScreen*)screen;
-	if (Input_TouchMode || Gui_GetInputGrab()) {
+	if (Input_TouchMode || Gui.InputGrab) {
 		return Elem_HandlesPointerDown(&s->hotbar, id, x, y);
 	}
 	return false;
@@ -308,8 +306,8 @@ static void HUDScreen_Free(void* screen) {
 static const struct ScreenVTABLE HUDScreen_VTABLE = {
 	HUDScreen_Init,        HUDScreen_Update,    HUDScreen_Free,
 	HUDScreen_Render,      HUDScreen_BuildMesh,
-	HUDScreen_KeyDown,     HUDScreen_KeyUp,     Screen_FKeyPress, Screen_FText,
-	HUDscreen_PointerDown, Screen_FPointer,     Screen_FPointer,  HUDscreen_MouseScroll,
+	HUDScreen_KeyDown,     HUDScreen_InputUp,   Screen_FKeyPress, Screen_FText,
+	HUDscreen_PointerDown, Screen_PointerUp,    Screen_FPointer,  HUDscreen_MouseScroll,
 	HUDScreen_Layout,      HUDScreen_ContextLost, HUDScreen_ContextRecreated
 };
 void HUDScreen_Show(void) {
@@ -627,17 +625,15 @@ static int TabListOverlay_PointerDown(void* screen, int id, int x, int y) {
 		player = TabList_UNSAFE_GetPlayer(s->ids[i]);
 		String_Format1(&text, "%s ", &player);
 		ChatScreen_AppendInput(&text);
-		return true;
+		return TOUCH_TYPE_GUI;
 	}
 	return false;
 }
 
-static int TabListOverlay_KeyUp(void* screen, int key) {
+static void TabListOverlay_KeyUp(void* screen, int key) {
 	struct TabListOverlay* s = (struct TabListOverlay*)screen;
-	if (key != KeyBinds[KEYBIND_TABLIST] || Input_TouchMode) return false;
-
+	if (key != KeyBinds[KEYBIND_TABLIST] || Input_TouchMode) return;
 	Gui_Remove((struct Screen*)s);
-	return true;
 }
 
 static void TabListOverlay_ContextLost(void* screen) {
@@ -687,7 +683,7 @@ static void TabListOverlay_Render(void* screen, double delta) {
 
 	Gfx_SetTexturing(true);
 	Elem_Render(title, delta);
-	grabbed = Gui_GetInputGrab();
+	grabbed = Gui.InputGrab;
 
 	for (i = 0; i < s->namesCount; i++) {
 		if (!s->textures[i].ID) continue;
@@ -699,10 +695,6 @@ static void TabListOverlay_Render(void* screen, double delta) {
 		Texture_Render(&tex);
 	}
 	Gfx_SetTexturing(false);
-
-	/* NOTE: Should usually be caught by KeyUp, but just in case. */
-	if (KeyBind_IsPressed(KEYBIND_TABLIST) || Input_TouchMode) return;
-	Gui_Remove((struct Screen*)s);
 }
 
 static void TabListOverlay_Free(void* screen) {
@@ -729,7 +721,7 @@ static const struct ScreenVTABLE TabListOverlay_VTABLE = {
 	TabListOverlay_Init,        Screen_NullUpdate,     TabListOverlay_Free,
 	TabListOverlay_Render,      TabListOverlay_BuildMesh,
 	Screen_FInput,              TabListOverlay_KeyUp,  Screen_FKeyPress, Screen_FText,
-	TabListOverlay_PointerDown, Screen_FPointer,       Screen_FPointer,  Screen_FMouseScroll,
+	TabListOverlay_PointerDown, Screen_PointerUp,      Screen_FPointer,  Screen_FMouseScroll,
 	TabListOverlay_Layout, TabListOverlay_ContextLost, TabListOverlay_ContextRecreated
 };
 void TabListOverlay_Show(void) {
@@ -767,11 +759,8 @@ static struct ChatScreen {
 
 static void ChatScreen_UpdateChatYOffsets(struct ChatScreen* s) {
 	int pad, y;
-
 	/* Determining chat Y requires us to know hotbar's position */
-	/* But HUD is lower priority, so it gets laid out AFTER chat */
-	/* Hence use this hack to resize HUD first */
-	HUDScreen_Layout(Gui_HUD);
+	HUDScreen_LayoutHotbar();
 		
 	y = min(s->input.base.y, Gui_HUD->hotbar.y);
 	y -= s->input.base.yOffset; /* add some padding */
@@ -786,7 +775,7 @@ static void ChatScreen_UpdateChatYOffsets(struct ChatScreen* s) {
 }
 
 static void ChatScreen_OnInputTextChanged(void* elem) {
-	ChatScreen_UpdateChatYOffsets(Gui_Chat);
+	ChatScreen_UpdateChatYOffsets(&ChatScreen_Instance);
 }
 
 static cc_string ChatScreen_GetChat(int i) {
@@ -869,7 +858,7 @@ static void ChatScreen_EnterChatInput(struct ChatScreen* s, cc_bool close) {
 	int defaultIndex;
 
 	s->grabsInput = false;
-	Camera_CheckFocus();
+	Gui_UpdateInputGrab();
 	Window_CloseKeyboard();
 	if (close) InputWidget_Clear(&s->input.base);
 
@@ -1057,8 +1046,6 @@ static void ChatScreen_BuildMesh(void* screen) { }
 
 static void ChatScreen_Layout(void* screen) {
 	struct ChatScreen* s = (struct ChatScreen*)screen;
-	/* See comment in ChatScreen_UpdateChatYOffsets */
-	HUDScreen_Layout(Gui_HUD);
 	if (ChatScreen_ChatUpdateFont(s)) ChatScreen_Redraw(s);
 
 	s->paddingX = Display_ScaleX(5);
@@ -1073,7 +1060,7 @@ static void ChatScreen_Layout(void* screen) {
 	ChatScreen_UpdateChatYOffsets(s);
 
 	/* Can't use Widget_SetLocation because it DPI scales input */
-	s->bottomRight.yOffset = Gui_HUD->hotbar.height + Display_ScaleY(15);
+	s->bottomRight.yOffset = HUDScreen_LayoutHotbar() + Display_ScaleY(15);
 	Widget_Layout(&s->bottomRight);
 
 	Widget_SetLocation(&s->announcement, ANCHOR_CENTRE, ANCHOR_CENTRE, 0, 0);
@@ -1161,20 +1148,20 @@ static int ChatScreen_KeyDown(void* screen, int key) {
 	return true;
 }
 
-static int ChatScreen_KeyUp(void* screen, int key) {
+static void ChatScreen_KeyUp(void* screen, int key) {
 	struct ChatScreen* s = (struct ChatScreen*)screen;
-	if (!s->grabsInput) return false;
+	if (!s->grabsInput || (struct Screen*)s != Gui.InputGrab) return;
+
 #ifdef CC_BUILD_WEB
 	/* See reason for this in HandleInputUp */
 	if (key == KEY_ESCAPE) ChatScreen_EnterChatInput(s, true);
 #endif
 
 	if (Server.SupportsFullCP437 && key == KeyBinds[KEYBIND_EXT_INPUT]) {
-		if (!WindowInfo.Focused) return true;
+		if (!WindowInfo.Focused) return;
 		SpecialInputWidget_SetActive(&s->altText, !s->altText.active);
 		ChatScreen_UpdateChatYOffsets(s);
 	}
-	return true;
 }
 
 static int ChatScreen_MouseScroll(void* screen, float delta) {
@@ -1202,15 +1189,15 @@ static int ChatScreen_PointerDown(void* screen, int id, int x, int y) {
 		if (!Utils_IsUrlPrefix(&text)) return false;
 
 		if (Chat_LogTime[s->chatIndex + i] + 10 < Game.Time) return false;
-		UrlWarningOverlay_Show(&text); return true;
+		UrlWarningOverlay_Show(&text); return TOUCH_TYPE_GUI;
 	}
 
 #ifdef CC_BUILD_TOUCH
 	if (Widget_Contains(&s->send, x, y)) {
-		ChatScreen_EnterChatInput(s, false); return true;
+		ChatScreen_EnterChatInput(s, false); return TOUCH_TYPE_GUI;
 	}
 	if (Widget_Contains(&s->cancel, x, y)) {
-		ChatScreen_EnterChatInput(s, true); return true;
+		ChatScreen_EnterChatInput(s, true); return TOUCH_TYPE_GUI;
 	}
 #endif
 
@@ -1218,10 +1205,10 @@ static int ChatScreen_PointerDown(void* screen, int id, int x, int y) {
 		if (s->altText.active && Widget_Contains(&s->altText, x, y)) {
 			Elem_HandlesPointerDown(&s->altText, id, x, y);
 			ChatScreen_UpdateChatYOffsets(s);
-			return true;
+			return TOUCH_TYPE_GUI;
 		}
 		Elem_HandlesPointerDown(&s->input.base, id, x, y);
-		return true;
+		return TOUCH_TYPE_GUI;
 	}
 
 	height = TextGroupWidget_UsedHeight(&s->chat);
@@ -1237,7 +1224,7 @@ static int ChatScreen_PointerDown(void* screen, int id, int x, int y) {
 	} else if (Gui.ClickableChat) {
 		ChatScreen_AppendInput(&text);
 	}
-	return true;
+	return TOUCH_TYPE_GUI;
 }
 
 static void ChatScreen_Init(void* screen) {
@@ -1307,7 +1294,7 @@ static const struct ScreenVTABLE ChatScreen_VTABLE = {
 	ChatScreen_Init,        Screen_NullUpdate, ChatScreen_Free,    
 	ChatScreen_Render,      ChatScreen_BuildMesh,
 	ChatScreen_KeyDown,     ChatScreen_KeyUp,  ChatScreen_KeyPress, ChatScreen_TextChanged,
-	ChatScreen_PointerDown, Screen_FPointer,   Screen_FPointer,     ChatScreen_MouseScroll,
+	ChatScreen_PointerDown, Screen_PointerUp,  Screen_FPointer,     ChatScreen_MouseScroll,
 	ChatScreen_Layout, ChatScreen_ContextLost, ChatScreen_ContextRecreated
 };
 void ChatScreen_Show(void) {
@@ -1321,10 +1308,14 @@ void ChatScreen_Show(void) {
 
 void ChatScreen_OpenInput(const cc_string* text) {
 	struct ChatScreen* s = &ChatScreen_Instance;
+	struct OpenKeyboardArgs args;
 	s->suppressNextPress = true;
 	s->grabsInput        = true;
-	Camera_CheckFocus();
-	Window_OpenKeyboard(text, KEYBOARD_TYPE_TEXT);
+
+	Gui_UpdateInputGrab();
+	OpenKeyboardArgs_Init(&args, text, KEYBOARD_TYPE_TEXT);
+	args.placeholder = "Enter chat";
+	Window_OpenKeyboard(&args);
 
 	String_Copy(&s->input.base.text, text);
 	InputWidget_UpdateText(&s->input.base);
@@ -1431,18 +1422,20 @@ static int InventoryScreen_KeyDown(void* screen, int key) {
 		Gui_Remove((struct Screen*)s);
 	} else if (Elem_HandlesKeyDown(table, key)) {
 	} else {
-		return Elem_HandlesKeyDown(&Gui_HUD->hotbar, key);
+		return Elem_HandlesKeyDown(&HUDScreen_Instance.hotbar, key);
 	}
 	return true;
 }
 
-static int InventoryScreen_KeyUp(void* screen, int key) {
-	struct InventoryScreen* s = (struct InventoryScreen*)screen;
+static cc_bool InventoryScreen_IsHotbarActive(void) {
+	struct Screen* grabbed = Gui.InputGrab;
+	/* Only toggle hotbar when inventory or no grab screen is open */
+	return !grabbed || grabbed == (struct Screen*)&InventoryScreen_Instance;
+}
 
-	if (key == KeyBinds[KEYBIND_INVENTORY]) {
-		s->releasedInv = true; return true;
-	}
-	return Elem_HandlesKeyUp(&Gui_HUD->hotbar, key);
+static void InventoryScreen_KeyUp(void* screen, int key) {
+	struct InventoryScreen* s = (struct InventoryScreen*)screen;
+	if (key == KeyBinds[KEYBIND_INVENTORY]) s->releasedInv = true;
 }
 
 static int InventoryScreen_PointerDown(void* screen, int id, int x, int y) {
@@ -1450,20 +1443,20 @@ static int InventoryScreen_PointerDown(void* screen, int id, int x, int y) {
 	struct TableWidget* table = &s->table;
 	cc_bool handled, hotbar;
 
-	if (table->scroll.draggingId == id) return true;
-	if (HUDscreen_PointerDown(Gui_HUD, id, x, y)) return true;
+	if (table->scroll.draggingId == id) return TOUCH_TYPE_GUI;
+	if (HUDscreen_PointerDown(Gui_HUD, id, x, y)) return TOUCH_TYPE_GUI;
 	handled = Elem_HandlesPointerDown(table, id, x, y);
 
 	if (!handled || table->pendingClose) {
 		hotbar = Key_IsControlPressed() || Key_IsShiftPressed();
 		if (!hotbar) Gui_Remove((struct Screen*)s);
 	}
-	return true;
+	return TOUCH_TYPE_GUI;
 }
 
-static int InventoryScreen_PointerUp(void* screen, int id, int x, int y) {
+static void InventoryScreen_PointerUp(void* screen, int id, int x, int y) {
 	struct InventoryScreen* s = (struct InventoryScreen*)screen;
-	return Elem_HandlesPointerUp(&s->table, id, x, y);
+	Elem_OnPointerUp(&s->table, id, x, y);
 }
 
 static int InventoryScreen_PointerMove(void* screen, int id, int x, int y) {
@@ -1667,8 +1660,8 @@ CC_NOINLINE static void LoadingScreen_ShowCommon(const cc_string* title, const c
 static const struct ScreenVTABLE LoadingScreen_VTABLE = {
 	LoadingScreen_Init,   Screen_NullUpdate, LoadingScreen_Free, 
 	LoadingScreen_Render, LoadingScreen_BuildMesh,
-	Screen_TInput,        Screen_TInput,     Screen_TKeyPress,   Screen_TText,
-	Screen_TPointer,      Screen_FPointer,   Screen_TPointer,    Screen_TMouseScroll,
+	Screen_TInput,        Screen_InputUp,    Screen_TKeyPress,   Screen_TText,
+	Screen_TPointer,      Screen_PointerUp,  Screen_TPointer,    Screen_TMouseScroll,
 	LoadingScreen_Layout, LoadingScreen_ContextLost, LoadingScreen_ContextRecreated
 };
 void LoadingScreen_Show(const cc_string* title, const cc_string* message) {
@@ -1685,6 +1678,7 @@ static void GeneratingScreen_AtlasChanged(void* obj) {
 }
 
 static void GeneratingScreen_Init(void* screen) {
+	void* thread;
 	Gen_Done = false;
 	LoadingScreen_Init(screen);
 
@@ -1693,9 +1687,11 @@ static void GeneratingScreen_Init(void* screen) {
 		Window_ShowDialog("Out of memory", "Not enough free memory to generate a map that large.\nTry a smaller size.");
 		Gen_Done = true;
 	} else if (Gen_Vanilla) {
-		Thread_Start(NotchyGen_Generate, true);
+		thread = Thread_Start(NotchyGen_Generate);
+		Thread_Detach(thread);
 	} else {
-		Thread_Start(FlatgrassGen_Generate, true);
+		thread = Thread_Start(FlatgrassGen_Generate);
+		Thread_Detach(thread);
 	}
 	Event_Register_(&TextureEvents.AtlasChanged,   NULL, GeneratingScreen_AtlasChanged);
 }
@@ -1742,8 +1738,8 @@ static void GeneratingScreen_Render(void* screen, double delta) {
 static const struct ScreenVTABLE GeneratingScreen_VTABLE = {
 	GeneratingScreen_Init,   GeneratingScreen_Update, GeneratingScreen_Free,
 	GeneratingScreen_Render, LoadingScreen_BuildMesh,
-	Screen_TInput,           Screen_TInput,     Screen_TKeyPress,   Screen_TText,
-	Screen_TPointer,         Screen_FPointer,   Screen_FPointer,    Screen_TMouseScroll,
+	Screen_TInput,           Screen_InputUp,    Screen_TKeyPress,   Screen_TText,
+	Screen_TPointer,         Screen_PointerUp,  Screen_FPointer,    Screen_TMouseScroll,
 	LoadingScreen_Layout, LoadingScreen_ContextLost, LoadingScreen_ContextRecreated
 };
 void GeneratingScreen_Show(void) {
@@ -1886,8 +1882,8 @@ static void DisconnectScreen_Free(void* screen) { Game_SetFpsLimit(Game_FpsLimit
 static const struct ScreenVTABLE DisconnectScreen_VTABLE = {
 	DisconnectScreen_Init,   DisconnectScreen_Update, DisconnectScreen_Free,
 	DisconnectScreen_Render, Screen_BuildMesh,
-	Screen_InputDown,        Screen_TInput,           Screen_TKeyPress, Screen_TText,
-	Menu_PointerDown,        Screen_FPointer,         Menu_PointerMove, Screen_TMouseScroll,
+	Screen_InputDown,        Screen_InputUp,          Screen_TKeyPress, Screen_TText,
+	Menu_PointerDown,        Screen_PointerUp,        Menu_PointerMove, Screen_TMouseScroll,
 	DisconnectScreen_Layout, DisconnectScreen_ContextLost, DisconnectScreen_ContextRecreated
 };
 void DisconnectScreen_Show(const cc_string* title, const cc_string* message) {
@@ -1970,6 +1966,15 @@ static void TouchScreen_TabClick(void* s, void* w) {
 	}
 }
 
+static void TouchScreen_SpeedClick(void* s, void* w) {
+	struct HacksComp* hacks = &LocalPlayer_Instance.Hacks;
+	if (hacks->Enabled) hacks->Speeding = !hacks->Speeding;
+}
+static void TouchScreen_HalfClick(void* s, void* w) {
+	struct HacksComp* hacks = &LocalPlayer_Instance.Hacks;
+	if (hacks->Enabled) hacks->HalfSpeeding = !hacks->HalfSpeeding;
+}
+
 static void TouchScreen_BindClick(void* screen, void* widget) {
 	struct TouchScreen* s = (struct TouchScreen*)screen;
 	int i   = Screen_Index(screen, widget) - ONSCREEN_MAX_BTNS;
@@ -1983,8 +1988,8 @@ static const struct TouchButtonDesc onscreenDescs[ONSCREEN_MAX_BTNS] = {
 	{ "Set spawn", 0,0,0, TouchScreen_SetSpawnClick, &LocalPlayer_Instance.Hacks.CanRespawn },
 	{ "Fly",       0,0,0, TouchScreen_FlyClick,      &LocalPlayer_Instance.Hacks.CanFly     },
 	{ "Noclip",    0,0,0, TouchScreen_NoclipClick,   &LocalPlayer_Instance.Hacks.CanNoclip  },
-	{ "Speed",     KEYBIND_SPEED,       0,0, TouchScreen_OnscreenClick, &LocalPlayer_Instance.Hacks.CanSpeed },
-	{ "\xabSpeed", KEYBIND_HALF_SPEED,  0,0, TouchScreen_OnscreenClick, &LocalPlayer_Instance.Hacks.CanSpeed },
+	{ "Speed",     0,0,0, TouchScreen_SpeedClick,    &LocalPlayer_Instance.Hacks.CanSpeed   },
+	{ "\xabSpeed", 0,0,0, TouchScreen_HalfClick,     &LocalPlayer_Instance.Hacks.CanSpeed   },
 	{ "Camera",    0,0,0, TouchScreen_CameraClick,   &LocalPlayer_Instance.Hacks.CanUseThirdPerson },
 	{ "Delete",    KEYBIND_DELETE_BLOCK, 0,0, TouchScreen_OnscreenClick },
 	{ "Pick",      KEYBIND_PICK_BLOCK,   0,0, TouchScreen_OnscreenClick },
@@ -2068,8 +2073,7 @@ static void TouchScreen_ContextRecreated(void* screen) {
 }
 
 static void TouchScreen_Render(void* screen, double delta) {
-	if (Gui_GetInputGrab()) return;
-
+	if (Gui.InputGrab) return;
 	Gfx_SetTexturing(true);
 	Screen_Render2Widgets(screen, delta);
 	Gfx_SetTexturing(false);
@@ -2077,16 +2081,26 @@ static void TouchScreen_Render(void* screen, double delta) {
 
 static int TouchScreen_PointerDown(void* screen, int id, int x, int y) {
 	struct TouchScreen* s = (struct TouchScreen*)screen;
+	struct Widget* w;
 	int i;
 	//Chat_Add1("POINTER DOWN: %i", &id);
-	if (Gui_GetInputGrab()) return false;
+	if (Gui.InputGrab) return false;
 
 	i = Screen_DoPointerDown(screen, id, x, y);
-	if (i >= ONSCREEN_MAX_BTNS) s->widgets[i]->active |= id;
-	return i >= 0;
+	if (i < ONSCREEN_MAX_BTNS) return i >= 0;
+
+	/* Clicking on other buttons then */
+	w = s->widgets[i];
+	w->active |= id;
+
+	/* Clicking on jump or fly buttons should still move camera */
+	for (i = 0; i < s->numBtns; i++) {
+		if (w == (struct Widget*)&s->btns[i]) return TOUCH_TYPE_GUI | TOUCH_TYPE_CAMERA;
+	}
+	return TOUCH_TYPE_GUI;
 }
 
-static int TouchScreen_PointerUp(void* screen, int id, int x, int y) {
+static void TouchScreen_PointerUp(void* screen, int id, int x, int y) {
 	struct TouchScreen* s = (struct TouchScreen*)screen;
 	int i;
 	//Chat_Add1("POINTER UP: %i", &id);
@@ -2100,9 +2114,8 @@ static int TouchScreen_PointerUp(void* screen, int id, int x, int y) {
 			Input_Set(KeyBinds[s->descs[i].bind], false);
 		}
 		s->btns[i].active &= ~id;
-		return true;
+		return;
 	}
-	return false;
 }
 
 static void TouchScreen_Layout(void* screen) {
@@ -2115,10 +2128,8 @@ static void TouchScreen_Layout(void* screen) {
 		Widget_SetLocation(&s->onscreen[i], ANCHOR_MAX, ANCHOR_MIN, 10, 10 + i * 40);
 	}
 	Widget_SetLocation(&s->more, ANCHOR_CENTRE, ANCHOR_MIN, 0, 10);
-
 	/* Need to align these relative to the hotbar */
-	HUDScreen_Layout(Gui_HUD);
-	height = Gui_HUD->hotbar.height;
+	height = HUDScreen_LayoutHotbar();
 
 	for (i = 0; i < s->numBtns; i++) {
 		desc = &s->descs[i];
@@ -2168,7 +2179,7 @@ static void TouchScreen_Free(void* s) {
 static const struct ScreenVTABLE TouchScreen_VTABLE = {
 	TouchScreen_Init,        Screen_NullUpdate,     TouchScreen_Free,
 	TouchScreen_Render,      Screen_BuildMesh,
-	Screen_FInput,           Screen_FInput,         Screen_FKeyPress, Screen_FText,
+	Screen_FInput,           Screen_InputUp,        Screen_FKeyPress, Screen_FText,
 	TouchScreen_PointerDown, TouchScreen_PointerUp, Screen_FPointer,  Screen_FMouseScroll,
 	TouchScreen_Layout,      TouchScreen_ContextLost, TouchScreen_ContextRecreated
 };

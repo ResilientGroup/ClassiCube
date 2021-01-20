@@ -5,7 +5,7 @@
    Also implements conversions betweens strings and numbers.
    Also implements converting code page 437 indices to/from unicode.
    Also implements wrapping a single line of text into multiple lines.
-   Copyright 2014-2020 ClassiCube | Licensed under BSD-3
+   Copyright 2014-2021 ClassiCube | Licensed under BSD-3
 */
 
 #define STRING_INT_CHARS 24
@@ -98,6 +98,8 @@ CC_API void String_AppendPaddedInt(cc_string* str, int num, int minDigits);
 CC_API void String_AppendFloat(cc_string* str, float num, int fracDigits); /* TODO: Need to account for , or . for decimal */
 /* Attempts to append characters. src MUST be null-terminated. */
 CC_API void String_AppendConst(cc_string* str, const char* src);
+/* Attempts to append characters. */
+void String_AppendAll(cc_string* str, const void* data, int len);
 /* Attempts to append characters of a string. */
 CC_API void String_AppendString(cc_string* str, const cc_string* src);
 /* Attempts to append characters of a string, skipping any colour codes. */
@@ -183,7 +185,7 @@ int Convert_CP437ToUtf8(char c, cc_uint8* data);
 
 /* Attempts to append all characters from UTF16 encoded data to the given string. */
 /* Characters not in code page 437 are omitted. */
-void String_AppendUtf16(cc_string* str, const cc_unichar* chars, int numBytes);
+void String_AppendUtf16(cc_string* str, const void* data, int numBytes);
 /* Attempts to append all characters from UTF8 encoded data to the given string. */
 /* Characters not in code page 437 are omitted. */
 void String_AppendUtf8(cc_string* str, const void* data, int numBytes);
@@ -207,8 +209,8 @@ CC_API cc_bool Convert_ParseBool(const cc_string*   str, cc_bool* value);
 
 #define STRINGSBUFFER_BUFFER_DEF_SIZE 4096
 #define STRINGSBUFFER_FLAGS_DEF_ELEMS 256
-#define STRINGSBUFFER_LEN_SHIFT 9
-#define STRINGSBUFFER_LEN_MASK  0x1FFUL
+#define STRINGSBUFFER_DEF_LEN_SHIFT 9
+#define STRINGSBUFFER_DEF_LEN_MASK  0x1FFUL
 
 struct StringsBuffer {
 	char*      textBuffer;  /* Raw characters of all entries */
@@ -218,13 +220,21 @@ struct StringsBuffer {
 	int      _textCapacity, _flagsCapacity;
 	char     _defaultBuffer[STRINGSBUFFER_BUFFER_DEF_SIZE];
 	cc_uint32 _defaultFlags[STRINGSBUFFER_FLAGS_DEF_ELEMS];
+	/* Value to shift a flags value by to retrieve the offset */
+	int _lenShift;
+	/* Value to mask a flags value with to retrieve the length */
+	int _lenMask;
 };
 
+/* Sets the number of bits in an entry's flags that are used to store its length. */
+/*  (e.g. if bits is 9, then the maximum length of an entry is 2^9-1 = 511) */
+void StringsBuffer_SetLengthBits(struct StringsBuffer* buffer, int bits);
 /* Resets counts to 0, and frees any allocated memory. */
-CC_API void StringsBuffer_Clear(struct StringsBuffer* buffer);
+CC_NOINLINE void StringsBuffer_Clear(struct StringsBuffer* buffer);
 /* UNSAFE: Returns a direct pointer to the i'th string in the given buffer. */
 /* You MUST NOT change the characters of this string. Copy to another string if necessary.*/
 CC_API STRING_REF cc_string StringsBuffer_UNSAFE_Get(struct StringsBuffer* buffer, int i);
+STRING_REF void StringsBuffer_UNSAFE_GetRaw(struct StringsBuffer* buffer, int i, cc_string* dst);
 /* Adds a given string to the end of the given buffer. */
 CC_API void StringsBuffer_Add(struct StringsBuffer* buffer, const cc_string* str);
 /* Removes the i'th string from the given buffer, shifting following strings downwards. */

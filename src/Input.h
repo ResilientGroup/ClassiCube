@@ -3,13 +3,13 @@
 #include "Core.h"
 /* Manages keyboard, mouse, and touch state.
    Raises events when keys are pressed etc, and implements base handlers for them.
-   Copyright 2014-2020 ClassiCube | Licensed under BSD-3
+   Copyright 2014-2021 ClassiCube | Licensed under BSD-3
 */
 struct IGameComponent;
 struct StringsBuffer;
 extern struct IGameComponent Input_Component;
 
-enum Key {
+enum InputButtons {
 	KEY_NONE, /* Unrecognised key */
 
 	KEY_F1, KEY_F2, KEY_F3, KEY_F4, KEY_F5, KEY_F6, KEY_F7, KEY_F8, KEY_F9, KEY_F10,
@@ -47,7 +47,7 @@ enum Key {
 	INPUT_COUNT
 };
 
-/* Simple names for each keyboard button. */
+/* Simple names for each input button. */
 extern const char* const Input_Names[INPUT_COUNT];
 
 #define Key_IsWinPressed()     (Input_Pressed[KEY_LWIN]   || Input_Pressed[KEY_RWIN])
@@ -55,14 +55,14 @@ extern const char* const Input_Names[INPUT_COUNT];
 #define Key_IsControlPressed() (Input_Pressed[KEY_LCTRL]  || Input_Pressed[KEY_RCTRL])
 #define Key_IsShiftPressed()   (Input_Pressed[KEY_LSHIFT] || Input_Pressed[KEY_RSHIFT])
 
-#ifdef CC_BUILD_OSX
+#ifdef CC_BUILD_DARWIN
 /* macOS uses CMD instead of CTRL for clipboard and stuff */
 #define Key_IsActionPressed() Key_IsWinPressed()
 #else
 #define Key_IsActionPressed() Key_IsControlPressed()
 #endif
 
-/* Pressed state of each keyboard button. Use Input_Set to change. */
+/* Pressed state of each input button. Use Input_Set to change. */
 extern cc_bool Input_Pressed[INPUT_COUNT];
 /* Sets Input_Pressed[key] to true and raises InputEvents.Down */
 void Input_SetPressed(int key);
@@ -71,7 +71,7 @@ void Input_SetReleased(int key);
 /* Calls either Input_SetPressed or Input_SetReleased */
 void Input_Set(int key, int pressed);
 void Input_SetNonRepeatable(int key, int pressed);
-/* Resets all keyboard buttons to released state. (Input_SetReleased) */
+/* Resets all input buttons to released state. (Input_SetReleased) */
 void Input_Clear(void);
 
 /* Whether raw mouse/touch input is currently being listened for. */
@@ -93,11 +93,17 @@ void Input_RemoveTouch(long id, int x, int y);
 #define Input_TouchMode false
 #endif
 
+/* Touch fingers are initially are 'all' type, meaning they could */
+/*  trigger menu clicks, camera movement, or place/delete blocks  */
+/* But for example, after clicking on a menu button, you wouldn't */
+/*  want moving that finger anymore to move the camera */
+#define TOUCH_TYPE_GUI    1
+#define TOUCH_TYPE_CAMERA 2
+#define TOUCH_TYPE_BLOCKS 4
+#define TOUCH_TYPE_ALL (TOUCH_TYPE_GUI | TOUCH_TYPE_CAMERA | TOUCH_TYPE_BLOCKS)
+
 /* Data for mouse and touch */
 extern struct Pointer { int x, y; } Pointers[INPUT_MAX_POINTERS];
-/* (OBSOLETE) X and Y coordinates of the mouse. Use Mouse_SetPosition to change. */
-extern int Mouse_X, Mouse_Y;
-
 /* Raises InputEvents.Wheel with the given wheel delta. */
 void Mouse_ScrollWheel(float delta);
 /* Sets X and Y position of the given pointer, always raising PointerEvents.Moved. */

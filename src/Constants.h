@@ -1,7 +1,7 @@
 #ifndef CC_CONSTANTS_H
 #define CC_CONSTANTS_H
 /* Defines useful constants.
-   Copyright 2014-2020 ClassiCube | Licensed under BSD-3
+   Copyright 2014-2021 ClassiCube | Licensed under BSD-3
 */
 
 #define GAME_MAX_CMDARGS 5
@@ -69,4 +69,11 @@ enum SKIN_TYPE { SKIN_64x32, SKIN_64x64, SKIN_64x64_SLIM, SKIN_INVALID = 0xF0 };
 #define UInt16_MaxValue ((cc_uint16)65535)
 #define Int32_MinValue  ((cc_int32)-2147483647L - (cc_int32)1L)
 #define Int32_MaxValue  ((cc_int32)2147483647L)
+
+/* Skins were moved to use Amazon S3, so link directly to avoid a pointless redirect */
+#define SKINS_SERVER    "http://classicube.s3.amazonaws.com/skin/"
+#define UPDATES_SERVER  "http://cs.classicube.net/client"
+#define SERVICES_SERVER "https://www.classicube.net/api"
+#define RESOURCE_SERVER "http://static.classicube.net"
+#define REGISTERNEW_URL "https://www.classicube.net/acc/register/"
 #endif

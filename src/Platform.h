@@ -2,7 +2,7 @@
 #define CC_PLATFORM_H
 #include "Core.h"
 /* Abstracts platform specific memory management, I/O, etc.
-   Copyright 2014-2020 ClassiCube | Licensed under BSD-3
+   Copyright 2014-2021 ClassiCube | Licensed under BSD-3
 */
 struct DateTime;
 
@@ -29,11 +29,19 @@ extern const cc_result ReturnCode_FileShareViolation;
 extern const cc_result ReturnCode_FileNotFound;
 extern const cc_result ReturnCode_SocketInProgess;
 extern const cc_result ReturnCode_SocketWouldBlock;
+extern const cc_result ReturnCode_DirectoryExists;
 
-/* Encodes a string in platform specific format. (e.g. unicode on windows, UTF8 on linux) */
-/* NOTE: Only useful for platform specific function calls - do NOT try to interpret the data. */
+#ifdef CC_BUILD_WIN
+/* Encodes a string in UTF16 format, also null terminating the string. */
 /* Returns the number of bytes written, excluding trailing NULL terminator. */
-int Platform_EncodeString(void* data, const cc_string* src);
+int Platform_EncodeUtf16(void* data, const cc_string* src);
+/* Converts a null terminated WCHAR* to char* in-place */
+void Platform_Utf16ToAnsi(void* data);
+#else
+/* Encodes a string in UTF8 format, also null terminating the string. */
+/* Returns the number of bytes written, excluding trailing NULL terminator. */
+int Platform_EncodeUtf8(void* data, const cc_string* src);
+#endif
 
 /* Initialises the platform specific state. */
 void Platform_Init(void);
@@ -92,9 +100,9 @@ CC_API cc_bool DynamicLib_DescribeError(cc_string* dst);
 extern const cc_string DynamicLib_Ext;
 CC_API cc_result DynamicLib_Load(const cc_string* path, void** lib); /* OBSOLETE */
 CC_API cc_result DynamicLib_Get(void* lib, const char* name, void** symbol); /* OBSOLETE */
-/* Represents a name, and a pointer to variable that will hold the loaded symbol */
-/* static int (APIENTRY *_myGetError)(void); --- (for example) */
-/* static struct DynamicLibSym sym = { "myGetError", (void**)&_myGetError }; */
+/* Contains a name and a pointer to variable that will hold the loaded symbol */
+/*  static int (APIENTRY *_myGetError)(void); --- (for example) */
+/*  static struct DynamicLibSym sym = { "myGetError", (void**)&_myGetError }; */
 struct DynamicLibSym { const char* name; void** symAddr; };
 /* Loads all symbols using DynamicLib_Get2 in the given list */
 /* Returns true if all symbols were successfully retrieved */
@@ -141,10 +149,8 @@ CC_API cc_uint64 Stopwatch_Measure(void);
 /* Returns total elapsed microseconds between two stopwatch measurements. */
 CC_API cc_uint64 Stopwatch_ElapsedMicroseconds(cc_uint64 beg, cc_uint64 end);
 /* Returns total elapsed milliseconds between two stopwatch measurements. */
-int Stopwatch_ElapsedMilliseconds(cc_uint64 beg, cc_uint64 end);
+int Stopwatch_ElapsedMS(cc_uint64 beg, cc_uint64 end);
 
-/* Returns non-zero if the given directory exists. */
-CC_API int Directory_Exists(const cc_string* path);
 /* Attempts to create a new directory. */
 CC_API cc_result Directory_Create(const cc_string* path);
 /* Callback function invoked for each file found. */
@@ -162,9 +168,9 @@ cc_result File_Open(cc_file* file, const cc_string* path);
 /* Attempts to open an existing or create a new file for reading and writing. */
 cc_result File_OpenOrCreate(cc_file* file, const cc_string* path);
 /* Attempts to read data from the file. */
-cc_result File_Read(cc_file file, cc_uint8* data, cc_uint32 count, cc_uint32* bytesRead);
+cc_result File_Read(cc_file file, void* data, cc_uint32 count, cc_uint32* bytesRead);
 /* Attempts to write data to the file. */
-cc_result File_Write(cc_file file, const cc_uint8* data, cc_uint32 count, cc_uint32* bytesWrote);
+cc_result File_Write(cc_file file, const void* data, cc_uint32 count, cc_uint32* bytesWrote);
 /* Attempts to close the given file. */
 cc_result File_Close(cc_file file);
 /* Attempts to seek to a position in the given file. */
@@ -177,13 +183,14 @@ cc_result File_Length(cc_file file, cc_uint32* len);
 /* Blocks the current thread for the given number of milliseconds. */
 CC_API void Thread_Sleep(cc_uint32 milliseconds);
 typedef void (*Thread_StartFunc)(void);
-/* Starts a new thread, optionally immediately detaching it. (See Thread_Detach) */
-CC_API void* Thread_Start(Thread_StartFunc func, cc_bool detach);
+/* Starts a new thread and then runs the given function in that thread. */
+/* NOTE: Threads must either be detached or joined, otherwise data leaks. */
+CC_API void* Thread_Start(Thread_StartFunc func);
 /* Frees the platform specific persistent data associated with the thread. */
-/* NOTE: You must either detach or join threads, as this data otherwise leaks. */
+/* NOTE: Once a thread has been detached, Thread_Join can no longer be used. */
 CC_API void Thread_Detach(void* handle);
 /* Blocks the current thread, until the given thread has finished. */
-/* NOTE: Once a thread has been detached, you can no longer use this method. */
+/* NOTE: This cannot be used on a thread that has been detached. */
 CC_API void Thread_Join(void* handle);
 
 /* Allocates a new mutex. (used to synchronise access to a shared resource) */
@@ -206,6 +213,7 @@ CC_API void  Waitable_Wait(void* handle);
 /* Blocks the calling thread until the waitable gets signalled, or milliseconds delay passes. */
 CC_API void  Waitable_WaitFor(void* handle, cc_uint32 milliseconds);
 
+/* Calls SysFonts_Register on each font that is available on this platform. */
 void Platform_LoadSysFonts(void);
 
 /* Allocates a new socket. */

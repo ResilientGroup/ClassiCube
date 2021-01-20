@@ -27,6 +27,7 @@
 #include "Window.h"
 #include "Particle.h"
 #include "Picking.h"
+#include "Input.h"
 #include "Utils.h"
 
 #define QUOTE(x) #x
@@ -114,7 +115,7 @@ static void ReadString(cc_uint8** ptr, cc_string* str) {
 		length = i + 1; break;
 	}
 
-	for (i = 0; i < length; i++) { String_Append(str, data[i]); }
+	String_AppendAll(str, data, length);
 	*ptr = data + STRING_SIZE;
 }
 
@@ -534,7 +535,7 @@ static void Classic_LevelFinalise(cc_uint8* data) {
 	int delta;
 
 	end   = Stopwatch_Measure();
-	delta = Stopwatch_ElapsedMilliseconds(map_receiveBeg, end);
+	delta = Stopwatch_ElapsedMS(map_receiveBeg, end);
 	Platform_Log1("map loading took: %i", &delta);
 	map_begunLoading = false;
 	WoM_CheckSendWomID();

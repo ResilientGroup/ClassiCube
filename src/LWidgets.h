@@ -3,7 +3,7 @@
 #include "Bitmap.h"
 #include "Constants.h"
 /* Describes and manages individual 2D GUI elements in the launcher.
-   Copyright 2014-2020 ClassiCube | Licensed under BSD-3
+   Copyright 2014-2021 ClassiCube | Licensed under BSD-3
 */
 struct LScreen;
 struct FontDesc;
@@ -18,15 +18,15 @@ struct LWidgetVTABLE {
 	/* Called when key is pressed and this widget is selected. */
 	void (*KeyPress)(void* widget, char c);
 	/* Called when mouse hovers/moves over this widget. */
-	void (*MouseMove)(void* widget, int deltaX, int deltaY, cc_bool wasOver);
+	void (*MouseMove)(void* widget, int idx, cc_bool wasOver);
 	/* Called when mouse moves away from this widget. */
 	void (*MouseLeft)(void* widget);
 	/* Called when mouse clicks on this widget. */
 	/* NOTE: This function is just for general widget behaviour. */
 	/* OnClick callback is for per-widget instance behaviour. */
-	void (*OnSelect)(void* widget, cc_bool wasSelected);
+	void (*OnSelect)(void* widget, int idx, cc_bool wasSelected);
 	/* Called when mouse clicks on another widget. */
-	void (*OnUnselect)(void* widget);
+	void (*OnUnselect)(void* widget, int idx);
 	/* Called when mouse wheel is scrolled and this widget is selected. */
 	void (*MouseWheel)(void* widget, float delta);
 	/* Called when on-screen keyboard text changed. */
@@ -42,7 +42,7 @@ struct LWidgetVTABLE {
 	cc_bool tabSelectable;         /* Whether this widget gets selected when pressing tab */ \
 	cc_uint8 horAnchor, verAnchor; /* Specifies the reference point for when this widget is resized */ \
 	int xOffset, yOffset;          /* Offset from the reference point */ \
-	void (*OnClick)(void* widget, int x, int y); /* Called when widget is clicked */ \
+	void (*OnClick)(void* widget, int idx); /* Called when widget is clicked */ \
 	Rect2D last;                  /* Widget's last drawn area */
 
 /* Represents an individual 2D gui component in the launcher. */
@@ -174,12 +174,13 @@ struct LTable {
 
 	/* Index of table column currently being dragged. */
 	int draggingColumn;
+	int dragXStart; /* X coordinate column drag started at */
 	cc_bool draggingScrollbar; /* Is scrollbar is currently being dragged */
-	int mouseOffset;    /* Offset of mouse for scrollbar dragging */
+	int dragYOffset;    /* Offset of mouse for scrollbar dragging */
 
 	float _wheelAcc; /* mouse wheel accumulator */
 	int _lastRow;    /* last clicked row (for doubleclick join) */
-	TimeMS _lastClick; /* time of last mouse click on a row */
+	cc_uint64 _lastClick; /* timestamp of last mouse click on a row */
 };
 /* Gets the current ith row */
 #define LTable_Get(row) (&FetchServersTask.servers[FetchServersTask.servers[row]._order])

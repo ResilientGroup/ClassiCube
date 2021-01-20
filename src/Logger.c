@@ -29,7 +29,7 @@
 #include <signal.h>
 #include <sys/ucontext.h>
 #endif
-#ifdef CC_BUILD_OSX
+#ifdef CC_BUILD_DARWIN
 /* Need this to detect macOS < 10.4, and switch to NS* api instead if so */
 #include <AvailabilityMacros.h>
 #endif
@@ -167,8 +167,8 @@ static void PrintFrame(cc_string* str, cc_uintptr addr, cc_uintptr symAddr, cons
 	module = String_FromReadonly(modName);
 	Utils_UNSAFE_GetFilename(&module);
 	String_Format2(str, "0x%x - %s", &addr, &module);
-
-	if (symName) {
+	
+	if (symName && symName[0]) {
 		offset = (int)(addr - symAddr);
 		String_Format2(str, "(%c+%i)" _NL, symName, &offset);
 	} else {
@@ -308,7 +308,7 @@ void Logger_Backtrace(cc_string* trace, void* ctx) {
 	_Unwind_Backtrace(UnwindFrame, trace);
 	String_AppendConst(trace, _NL);
 }
-#elif defined CC_BUILD_OSX
+#elif defined CC_BUILD_DARWIN
 /* backtrace is only available on macOS since 10.5 */
 void Logger_Backtrace(cc_string* trace, void* ctx) {
 	void* addrs[40];
@@ -430,7 +430,7 @@ static void PrintRegisters(cc_string* str, void* ctx) {
 	#error "Unknown CPU architecture"
 #endif
 }
-#elif defined CC_BUILD_OSX && __DARWIN_UNIX03
+#elif defined CC_BUILD_DARWIN && __DARWIN_UNIX03
 /* See /usr/include/mach/i386/_structs.h (macOS 10.5+) */
 static void PrintRegisters(cc_string* str, void* ctx) {
 	mcontext_t r = ((ucontext_t*)ctx)->uc_mcontext;
@@ -440,6 +440,12 @@ static void PrintRegisters(cc_string* str, void* ctx) {
 #elif defined __x86_64__
 	#define REG_GET(reg, ign) &r->__ss.__r##reg
 	Dump_X64()
+#elif defined __arm__
+	#define REG_GNUM(num)     &r->__ss.__r[num]
+	#define REG_GET(reg, ign) &r->__ss.__ ## reg
+	#define REG_GET_FP()      &r->__ss.__r[11]
+	#define REG_GET_IP()      &r->__ss.__pc
+	Dump_ARM32()
 #elif defined __ppc__
 	#define REG_GNUM(num)     &r->__ss.__r##num
 	#define REG_GET_PC()      &r->__ss.__srr0
@@ -450,7 +456,7 @@ static void PrintRegisters(cc_string* str, void* ctx) {
 	#error "Unknown CPU architecture"
 #endif
 }
-#elif defined CC_BUILD_OSX
+#elif defined CC_BUILD_DARWIN
 /* See /usr/include/mach/i386/thread_status.h (macOS 10.4) */
 static void PrintRegisters(cc_string* str, void* ctx) {
 	mcontext_t r = ((ucontext_t*)ctx)->uc_mcontext;
@@ -653,7 +659,7 @@ static void DumpMisc(void* ctx) {
 
 	close(fd);
 }
-#elif defined CC_BUILD_OSX
+#elif defined CC_BUILD_DARWIN
 #include <mach-o/dyld.h>
 
 static void DumpMisc(void* ctx) {
@@ -722,50 +728,39 @@ static LONG WINAPI UnhandledFilter(struct _EXCEPTION_POINTERS* info) {
 }
 void Logger_Hook(void) { SetUnhandledExceptionFilter(UnhandledFilter); }
 
+#if __GNUC__
 /* Don't want compiler doing anything fancy with registers */
-#if _MSC_VER
-#pragma optimize ("", off)
-#endif
+void __attribute__((optimize("O0"))) Logger_Abort2(cc_result result, const char* raw_msg) {
+#else
 void Logger_Abort2(cc_result result, const char* raw_msg) {
+#endif
 	CONTEXT ctx;
 #ifndef _M_IX86
-	/* This method is guaranteed to exist on 64 bit windows */
-	/* It is missing in 32 bit Windows 2000 however */
+	/* This method is guaranteed to exist on 64 bit windows.  */
+	/* NOTE: This is missing in 32 bit Windows 2000 however,  */
+	/*  so an alternative is provided for MinGW below so that */
+	/*  the game can cross-compiled for Windows 98 / 2000 */
 	RtlCaptureContext(&ctx);
-#elif _MSC_VER
+#elif __GNUC__
 	/* Stack frame layout on x86: */
-	/* [ebp] is previous frame's EBP */
-	/* [ebp+4] is previous frame's EIP (return address) */
-	/* address of [ebp+8] is previous frame's ESP */
-	__asm {
-		mov eax, [ebp]
-		mov [ctx.Ebp], eax
-		mov eax, [ebp+4]
-		mov [ctx.Eip], eax
-		lea eax, [ebp+8]
-		mov [ctx.Esp], eax
-		mov [ctx.ContextFlags], CONTEXT_CONTROL
-	}
-#else
+	/*  [ebp] is previous frame's EBP */
+	/*  [ebp+4] is previous frame's EIP (return address) */
+	/*  address of [ebp+8] is previous frame's ESP */
 	__asm__(
-		"mov 0(%%ebp), %%eax \n\t"
-		"mov %%eax, %0       \n\t"
-		"mov 4(%%ebp), %%eax \n\t"
-		"mov %%eax, %1       \n\t"
-		"lea 8(%%ebp), %%eax \n\t"
-		"mov %%eax, %2"
+		"mov 0(%%ebp), %%eax \n\t" /* mov eax, [ebp]     */
+		"mov %%eax, %0       \n\t" /* mov [ctx.Ebp], eax */
+		"mov 4(%%ebp), %%eax \n\t" /* mov eax, [ebp+4]   */
+		"mov %%eax, %1       \n\t" /* mov [ctx.Eip], eax */
+		"lea 8(%%ebp), %%eax \n\t" /* lea eax, [ebp+8]   */
+		"mov %%eax, %2"            /* mov [ctx.Esp], eax */
 		: "=m" (ctx.Ebp), "=m" (ctx.Eip), "=m" (ctx.Esp)
 		:
 		: "eax", "memory"
 	);
 	ctx.ContextFlags = CONTEXT_CONTROL;
 #endif
-
 	AbortCommon(result, raw_msg, &ctx);
 }
-#if _MSC_VER
-#pragma optimize ("", on)
-#endif
 #elif defined CC_BUILD_POSIX
 static void SignalHandler(int sig, siginfo_t* info, void* ctx) {
 	cc_string msg; char msgBuffer[128 + 1];

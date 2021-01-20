@@ -28,11 +28,20 @@ void Clipboard_RequestText(RequestClipboardCallback callback, void* obj) {
 }
 #endif
 
+#ifdef CC_BUILD_IOS
+/* iOS implements some functions in external interop_ios.m file */
+#define CC_MAYBE_OBJC extern
+#else
+/* All other platforms implement internally in this file */
+#define CC_MAYBE_OBJC static
+#endif
+
+
 static int cursorPrevX, cursorPrevY;
 static cc_bool cursorVisible = true;
 /* Gets the position of the cursor in screen or window coordinates. */
-static void Cursor_GetRawPos(int* x, int* y);
-static void Cursor_DoSetVisible(cc_bool visible);
+CC_MAYBE_OBJC void Cursor_GetRawPos(int* x, int* y);
+CC_MAYBE_OBJC void Cursor_DoSetVisible(cc_bool visible);
 
 void Cursor_SetVisible(cc_bool visible) {
 	if (cursorVisible == visible) return;
@@ -71,7 +80,7 @@ static void DefaultDisableRawMouse(void) {
 }
 
 /* The actual windowing system specific method to display a message box */
-static void ShowDialogCore(const char* title, const char* msg);
+CC_MAYBE_OBJC void ShowDialogCore(const char* title, const char* msg);
 void Window_ShowDialog(const char* title, const char* msg) {
 	/* Ensure cursor is visible while showing message box */
 	cc_bool visible = cursorVisible;
@@ -79,6 +88,12 @@ void Window_ShowDialog(const char* title, const char* msg) {
 	if (!visible) Cursor_SetVisible(true);
 	ShowDialogCore(title, msg);
 	if (!visible) Cursor_SetVisible(false);
+}
+
+void OpenKeyboardArgs_Init(struct OpenKeyboardArgs* args, STRING_REF const cc_string* text, int type) {
+	args->text = text;
+	args->type = type;
+	args->placeholder = "";
 }
 
 
@@ -158,7 +173,7 @@ void Window_Create(int width, int height) {
 
 void Window_SetTitle(const cc_string* title) {
 	char str[NATIVE_STR_LEN];
-	Platform_EncodeString(str, title);
+	Platform_EncodeUtf8(str, title);
 	SDL_SetWindowTitle(win_handle, str);
 }
 
@@ -173,7 +188,7 @@ void Clipboard_GetText(cc_string* value) {
 
 void Clipboard_SetText(const cc_string* value) {
 	char str[NATIVE_STR_LEN];
-	Platform_EncodeString(str, value);
+	Platform_EncodeUtf8(str, value);
 	SDL_SetClipboardText(str);
 }
 
@@ -402,7 +417,7 @@ void Window_FreeFramebuffer(struct Bitmap* bmp) {
 	/* TODO: Do we still need to unlock it though? */
 }
 
-void Window_OpenKeyboard(const cc_string* text, int type) { SDL_StartTextInput(); }
+void Window_OpenKeyboard(const struct OpenKeyboardArgs* args) { SDL_StartTextInput(); }
 void Window_SetKeyboardText(const cc_string* text) { }
 void Window_CloseKeyboard(void) { SDL_StopTextInput(); }
 
@@ -462,6 +477,7 @@ static HDC win_DC;
 static cc_bool suppress_resize;
 static int win_totalWidth, win_totalHeight; /* Size of window including titlebar and borders */
 static int windowX, windowY;
+static cc_bool is_ansiWindow;
 
 static const cc_uint8 key_map[14 * 16] = {
 	0, 0, 0, 0, 0, 0, 0, 0, KEY_BACKSPACE, KEY_TAB, 0, 0, 0, KEY_ENTER, 0, 0,
@@ -658,12 +674,13 @@ static LRESULT CALLBACK Window_Procedure(HWND handle, UINT message, WPARAM wPara
 
 	case WM_DESTROY:
 		WindowInfo.Exists = false;
-		UnregisterClass(CC_WIN_CLASSNAME, win_instance);
+		UnregisterClassW(CC_WIN_CLASSNAME, win_instance);
 
 		if (win_DC) ReleaseDC(win_handle, win_DC);
 		break;
 	}
-	return DefWindowProc(handle, message, wParam, lParam);
+	return is_ansiWindow ? DefWindowProcA(handle, message, wParam, lParam)
+						 : DefWindowProcW(handle, message, wParam, lParam);
 }
 
 
@@ -680,24 +697,12 @@ void Window_Init(void) {
 	ReleaseDC(NULL, hdc);
 }
 
-void Window_Create(int width, int height) {
+static ATOM DoRegisterClass(void) {
 	ATOM atom;
-	RECT r;
-
-	win_instance = GetModuleHandle(NULL);
-	/* TODO: UngroupFromTaskbar(); */
-	width  = Display_ScaleX(width);
-	height = Display_ScaleY(height);
-
-	/* Find out the final window rectangle, after the WM has added its chrome (titlebar, sidebars etc). */
-	r.left = Display_CentreX(width);  r.right  = r.left + width;
-	r.top  = Display_CentreY(height); r.bottom = r.top  + height;
-	AdjustWindowRect(&r, CC_WIN_STYLE, false);
-
-	WNDCLASSEX wc = { 0 };
-	wc.cbSize    = sizeof(WNDCLASSEX);
-	wc.style     = CS_OWNDC;
-	wc.hInstance = win_instance;
+	WNDCLASSEXW wc = { 0 };
+	wc.cbSize     = sizeof(WNDCLASSEXW);
+	wc.style      = CS_OWNDC;
+	wc.hInstance  = win_instance;
 	wc.lpfnWndProc   = Window_Procedure;
 	wc.lpszClassName = CC_WIN_CLASSNAME;
 
@@ -705,15 +710,44 @@ void Window_Create(int width, int height) {
 			GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON), 0);
 	wc.hIconSm = (HICON)LoadImage(win_instance, MAKEINTRESOURCE(1), IMAGE_ICON,
 			GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), 0);
-	wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+	wc.hCursor = LoadCursorA(NULL, IDC_ARROW);
 
-	atom = RegisterClassEx(&wc);
-	if (!atom) Logger_Abort2(GetLastError(), "Failed to register window class");
+	if ((atom = RegisterClassExW(&wc))) return atom;
+	/* Windows 9x does not support W API functions */
+	return RegisterClassExA((const WNDCLASSEXA*)&wc);
+}
 
-	win_handle = CreateWindowEx(0, MAKEINTATOM(atom), NULL, CC_WIN_STYLE,
-		r.left, r.top, Rect_Width(r), Rect_Height(r), NULL, NULL, win_instance, NULL);
+static void DoCreateWindow(ATOM atom, int width, int height) {
+	cc_result res;
+	RECT r;
+	/* Calculate final window rectangle after window decorations are added (titlebar, borders etc) */
+	r.left = Display_CentreX(width);  r.right  = r.left + width;
+	r.top  = Display_CentreY(height); r.bottom = r.top  + height;
+	AdjustWindowRect(&r, CC_WIN_STYLE, false);
 
-	if (!win_handle) Logger_Abort2(GetLastError(), "Failed to create window");
+	if ((win_handle = CreateWindowExW(0, MAKEINTATOM(atom), NULL, CC_WIN_STYLE,
+		r.left, r.top, Rect_Width(r), Rect_Height(r), NULL, NULL, win_instance, NULL))) return;
+	res = GetLastError();
+
+	/* Windows 9x does not support W API functions */
+	if (res == ERROR_CALL_NOT_IMPLEMENTED) {
+		is_ansiWindow   = true;
+		if ((win_handle = CreateWindowExA(0, MAKEINTATOM(atom), NULL, CC_WIN_STYLE,
+			r.left, r.top, Rect_Width(r), Rect_Height(r), NULL, NULL, win_instance, NULL))) return;
+		res = GetLastError();
+	}
+	Logger_Abort2(res, "Failed to create window");
+}
+
+void Window_Create(int width, int height) {
+	ATOM atom;
+	win_instance = GetModuleHandle(NULL);
+	/* TODO: UngroupFromTaskbar(); */
+	width  = Display_ScaleX(width);
+	height = Display_ScaleY(height);
+
+	atom = DoRegisterClass();
+	DoCreateWindow(atom, width, height);
 	RefreshWindowBounds();
 
 	win_DC = GetDC(win_handle);
@@ -723,9 +757,9 @@ void Window_Create(int width, int height) {
 }
 
 void Window_SetTitle(const cc_string* title) {
-	TCHAR str[NATIVE_STR_LEN];
-	Platform_EncodeString(str, title);
-	SetWindowText(win_handle, str);
+	WCHAR str[NATIVE_STR_LEN];
+	Platform_EncodeUtf16(str, title);
+	SetWindowTextW(win_handle, str);
 }
 
 void Clipboard_GetText(cc_string* value) {
@@ -756,9 +790,9 @@ void Clipboard_GetText(cc_string* value) {
 		/* ignore trailing NULL at end */
 		/* TODO: Verify it's always there */
 		if (unicode) {
-			String_AppendUtf16(value, (cc_unichar*)src, size - 2);
+			String_AppendUtf16(value,  src, size - 2);
 		} else {
-			String_DecodeCP1252(value, (cc_uint8*)src,  size - 1);
+			String_DecodeCP1252(value, src, size - 1);
 		}
 
 		GlobalUnlock(hGlobal);
@@ -803,7 +837,7 @@ void Window_Show(void) {
 }
 
 int Window_GetWindowState(void) {
-	DWORD s = GetWindowLong(win_handle, GWL_STYLE);
+	DWORD s = GetWindowLongW(win_handle, GWL_STYLE);
 
 	if ((s & WS_MINIMIZE))                   return WINDOW_STATE_MINIMISED;
 	if ((s & WS_MAXIMIZE) && (s & WS_POPUP)) return WINDOW_STATE_FULLSCREEN;
@@ -817,7 +851,7 @@ static void ToggleFullscreen(cc_bool fullscreen, UINT finalShow) {
 	suppress_resize = true;
 	{
 		ShowWindow(win_handle, SW_RESTORE); /* reset maximised state */
-		SetWindowLong(win_handle, GWL_STYLE, style);
+		SetWindowLongW(win_handle, GWL_STYLE, style);
 		SetWindowPos(win_handle, NULL, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
 		ShowWindow(win_handle, finalShow); 
 		Window_ProcessEvents();
@@ -847,7 +881,7 @@ cc_result Window_ExitFullscreen(void) {
 
 
 void Window_SetSize(int width, int height) {
-	DWORD style = GetWindowLong(win_handle, GWL_STYLE);
+	DWORD style = GetWindowLongW(win_handle, GWL_STYLE);
 	RECT rect   = { 0, 0, width, height };
 	AdjustWindowRect(&rect, style, false);
 
@@ -856,15 +890,21 @@ void Window_SetSize(int width, int height) {
 }
 
 void Window_Close(void) {
-	PostMessage(win_handle, WM_CLOSE, 0, 0);
+	PostMessageW(win_handle, WM_CLOSE, 0, 0);
 }
 
 void Window_ProcessEvents(void) {
 	HWND foreground;
 	MSG msg;
-	while (PeekMessage(&msg, NULL, 0, 0, 1)) {
-		TranslateMessage(&msg);
-		DispatchMessage(&msg);
+
+	if (is_ansiWindow) {
+		while (PeekMessageA(&msg, NULL, 0, 0, 1)) {
+			TranslateMessage(&msg); DispatchMessageA(&msg);
+		}
+	} else {
+		while (PeekMessageW(&msg, NULL, 0, 0, 1)) {
+			TranslateMessage(&msg); DispatchMessageW(&msg);
+		}
 	}
 
 	foreground = GetForegroundWindow();
@@ -903,13 +943,15 @@ void Window_AllocFramebuffer(struct Bitmap* bmp) {
 	BITMAPINFO hdr = { 0 };
 	if (!draw_DC) draw_DC = CreateCompatibleDC(win_DC);
 	
-	hdr.bmiHeader.biSize = sizeof(BITMAPINFO);
+	/* sizeof(BITMAPINFO) does not work on Windows 9x */
+	hdr.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
 	hdr.bmiHeader.biWidth    =  bmp->width;
 	hdr.bmiHeader.biHeight   = -bmp->height;
 	hdr.bmiHeader.biBitCount = 32;
 	hdr.bmiHeader.biPlanes   = 1; 
 
 	draw_DIB = CreateDIBSection(draw_DC, &hdr, DIB_RGB_COLORS, (void**)&bmp->scan0, NULL, 0);
+	if (!draw_DIB) Logger_Abort2(GetLastError(), "Failed to create DIB");
 }
 
 void Window_DrawFramebuffer(Rect2D r) {
@@ -945,7 +987,7 @@ static void InitRawMouse(void) {
 	rawMouseSupported = false;
 }
 
-void Window_OpenKeyboard(const cc_string* text, int type) { }
+void Window_OpenKeyboard(const struct OpenKeyboardArgs* args) { }
 void Window_SetKeyboardText(const cc_string* text) { }
 void Window_CloseKeyboard(void) { }
 
@@ -987,7 +1029,6 @@ void Window_DisableRawMouse(void) { DefaultDisableRawMouse(); }
 #define _NET_WM_STATE_TOGGLE 2
 
 static Display* win_display;
-static int win_screen;
 static Window win_rootWin, win_handle;
 static XVisualInfo win_visual;
 #ifdef CC_BUILD_XIM
@@ -1159,19 +1200,50 @@ static void RefreshWindowBounds(int width, int height) {
 	}
 }
 
+typedef int (*X11_ErrorHandler)(Display* dpy, XErrorEvent* ev);
+typedef int (*X11_IOErrorHandler)(Display* dpy);
+static X11_ErrorHandler   realXErrorHandler;
+static X11_IOErrorHandler realXIOErrorHandler;
+
+static void LogXErrorCore(const char* msg) {
+	char traceBuffer[2048];
+	cc_string trace;
+	Platform_LogConst(msg);
+
+	String_InitArray(trace, traceBuffer);
+	Logger_Backtrace(&trace, NULL);
+	Platform_Log(traceBuffer, trace.length);
+}
+
+static int LogXError(Display* dpy, XErrorEvent* ev) {
+	LogXErrorCore("== unhandled X11 error ==");
+	return realXErrorHandler(dpy, ev);
+}
+
+static int LogXIOError(Display* dpy) {
+	LogXErrorCore("== unhandled XIO error ==");
+	return realXIOErrorHandler(dpy);
+}
+
+static void HookXErrors(void) {
+	realXErrorHandler   = XSetErrorHandler(LogXError);
+	realXIOErrorHandler = XSetIOErrorHandler(LogXIOError);
+}
+
 
 /*########################################################################################################################*
 *--------------------------------------------------Public implementation--------------------------------------------------*
 *#########################################################################################################################*/
-static XVisualInfo GLContext_SelectVisual(struct GraphicsMode* mode);
+static XVisualInfo GLContext_SelectVisual(void);
 void Window_Init(void) {
 	Display* display = XOpenDisplay(NULL);
 	int screen;
+
 	if (!display) Logger_Abort("Failed to open display");
 	screen = DefaultScreen(display);
+	HookXErrors();
 
 	win_display = display;
-	win_screen  = screen;
 	win_rootWin = RootWindow(display, screen);
 
 	/* TODO: Use Xinerama and XRandR for querying these */
@@ -1199,19 +1271,17 @@ void Window_Create(int width, int height) {
 	XSetWindowAttributes attributes = { 0 };
 	XSizeHints hints = { 0 };
 	Atom protocols[2];
-	struct GraphicsMode mode;
 	int supported, x, y;
 
 	x = Display_CentreX(width);
 	y = Display_CentreY(height);
-	InitGraphicsMode(&mode);
 	RegisterAtoms();
 
 	win_eventMask = StructureNotifyMask /*| SubstructureNotifyMask*/ | ExposureMask |
 		KeyReleaseMask  | KeyPressMask    | KeymapStateMask   | PointerMotionMask |
 		FocusChangeMask | ButtonPressMask | ButtonReleaseMask | EnterWindowMask |
 		LeaveWindowMask | PropertyChangeMask;
-	win_visual = GLContext_SelectVisual(&mode);
+	win_visual = GLContext_SelectVisual();
 
 	Platform_LogConst("Opening render window... ");
 	attributes.colormap   = XCreateColormap(win_display, win_rootWin, win_visual.visual, AllocNone);
@@ -1261,7 +1331,7 @@ void Window_Create(int width, int height) {
 
 void Window_SetTitle(const cc_string* title) {
 	char str[NATIVE_STR_LEN];
-	Platform_EncodeString(str, title);
+	Platform_EncodeUtf8(str, title);
 	XStoreName(win_display, win_handle, str);
 }
 
@@ -1562,7 +1632,7 @@ void Window_ProcessEvents(void) {
 			if (e.xselectionrequest.selection == xa_clipboard && e.xselectionrequest.target == xa_utf8_string && clipboard_copy_text.length) {
 				reply.xselection.property = Window_GetSelectionProperty(&e);
 				char str[800];
-				int len = Platform_EncodeString(str, &clipboard_copy_text);
+				int len = Platform_EncodeUtf8(str, &clipboard_copy_text);
 
 				XChangeProperty(win_display, reply.xselection.requestor, reply.xselection.property, xa_utf8_string, 8,
 					PropModeReplace, (unsigned char*)str, len);
@@ -1883,12 +1953,33 @@ void Window_FreeFramebuffer(struct Bitmap* bmp) {
 	Mem_Free(bmp->scan0);
 }
 
-void Window_OpenKeyboard(const cc_string* text, int type) { }
+void Window_OpenKeyboard(const struct OpenKeyboardArgs* args) { }
 void Window_SetKeyboardText(const cc_string* text) { }
 void Window_CloseKeyboard(void) { }
 
 static cc_bool rawMouseInited, rawMouseSupported;
 static int xiOpcode;
+
+static void CheckMovementDelta(double dx, double dy) {
+	/* Despite the assumption that XI_RawMotion is relative,     */
+	/*  unfortunately there's a few buggy corner cases out there */
+	/*  where absolute coordinates are provided instead.         */
+	/* The ugly code belows tries to detect these corner cases,  */
+	/*  and disables XInput2 when that happens                   */
+	static int valid, fails;
+
+	if (valid) return;
+	/* The default window resolution is 854 x 480, so if there's */
+	/*  a delta less than half of that, then it's almost certain */
+	/*  that the provided coordinates are relative.*/
+	if (dx < 300 || dy < 200) { valid = true; return; }
+
+	if (fails++ < 20) return;
+	/* Checked over 20 times now, but no relative coordinates,   */
+	/*  so give up trying to use XInput2 anymore.                */
+	Platform_LogConst("Buggy XInput2 detected, disabling it.."); 
+	rawMouseSupported = false;
+}
 
 static void HandleGenericEvent(XEvent* e) {
 	const double* values;
@@ -1906,6 +1997,7 @@ static void HandleGenericEvent(XEvent* e) {
 		dx = XIMaskIsSet(ev->valuators.mask, 0) ? *values++ : 0;
 		dy = XIMaskIsSet(ev->valuators.mask, 1) ? *values++ : 0;
 
+		CheckMovementDelta(dx, dy);
 		/* Using 0.5f here makes the sensitivity about same as normal cursor movement */
 		Event_RaiseRawMove(&PointerEvents.RawMoved, dx * 0.5f, dy * 0.5f);
 	}
@@ -2065,7 +2157,7 @@ void Clipboard_GetText(cc_string* value) {
 	if (!(err = PasteboardCopyItemFlavorData(pbRef, itemID, FMT_UTF16, &outData))) {	
 		ptr = CFDataGetBytePtr(outData);
 		len = CFDataGetLength(outData);
-		if (ptr) String_AppendUtf16(value, (cc_unichar*)ptr, len);
+		if (ptr) String_AppendUtf16(value, ptr, len);
 	} else if (!(err = PasteboardCopyItemFlavorData(pbRef, itemID, FMT_UTF8, &outData))) {
 		ptr = CFDataGetBytePtr(outData);
 		len = CFDataGetLength(outData);
@@ -2085,7 +2177,7 @@ void Clipboard_SetText(const cc_string* value) {
 	if (err) Logger_Abort2(err, "Clearing Pasteboard");
 	PasteboardSynchronize(pbRef);
 
-	len    = Platform_EncodeString(str, value);
+	len    = Platform_EncodeUtf8(str, value);
 	cfData = CFDataCreate(NULL, str, len);
 	if (!cfData) Logger_Abort("CFDataCreate() returned null pointer");
 
@@ -2107,7 +2199,7 @@ static void Cursor_DoSetVisible(cc_bool visible) {
 	}
 }
 
-void Window_OpenKeyboard(const cc_string* text, int type) { }
+void Window_OpenKeyboard(const struct OpenKeyboardArgs* args) { }
 void Window_SetKeyboardText(const cc_string* text) { }
 void Window_CloseKeyboard(void) { }
 
@@ -2390,7 +2482,7 @@ static void HookEvents(void) {
 	/* The documentation for 'RunApplicationEventLoop' states that it installs */
 	/* the standard application event handler which lets the menubar work. */
 	/* However, we cannot use that since the event loop is managed by us instead. */
-	/* Unfortunately, there is no proper API to duplicate that behaviour, so reply */
+	/* Unfortunately, there is no proper API to duplicate that behaviour, so rely */
 	/* on the undocumented GetMenuBarEventTarget to achieve similar behaviour. */
 	/* TODO: This is wrong for PowerPC. But at least it doesn't crash or anything. */
 #define _RTLD_DEFAULT ((void*)-2)
@@ -2482,7 +2574,7 @@ void Window_SetTitle(const cc_string* title) {
 	int len;
 	
 	/* TODO: This leaks memory, old title isn't released */
-	len     = Platform_EncodeString(str, title);
+	len     = Platform_EncodeUtf8(str, title);
 	titleCF = CFStringCreateWithBytes(kCFAllocatorDefault, str, len, kCFStringEncodingUTF8, false);
 	SetWindowTitleWithCFString(win_handle, titleCF);
 }
@@ -2861,7 +2953,7 @@ void Window_SetTitle(const cc_string* title) {
 	int len;
 
 	/* TODO: This leaks memory, old title isn't released */
-	len = Platform_EncodeString(str, title);
+	len = Platform_EncodeUtf8(str, title);
 	titleCF = CFStringCreateWithBytes(kCFAllocatorDefault, str, len, kCFStringEncodingUTF8, false);
 	objc_msgSend(winHandle, sel_registerName("setTitle:"), titleCF);
 }
@@ -3170,17 +3262,16 @@ static EM_BOOL OnMouseButton(int type, const EmscriptenMouseEvent* ev, void* dat
 }
  
 /* input coordinates are CSS pixels, remap to internal pixels */
-static void RescaleXY(int srcX, int srcY, int* dstX, int* dstY) {
+static void RescaleXY(int* x, int* y) {
 	double css_width, css_height;
 	emscripten_get_element_css_size("#canvas", &css_width, &css_height);
 
 	if (css_width && css_height) {
-		*dstX = (int)(srcX * WindowInfo.Width  / css_width );
-		*dstY = (int)(srcY * WindowInfo.Height / css_height);
+		*x = (int)(*x * WindowInfo.Width  / css_width );
+		*y = (int)(*y * WindowInfo.Height / css_height);
 	} else {
-		/* If css width or height is 0, something is bogus */
-		/* It's still better to avoid divsision by 0 anyways */
-		*dstX = srcX; *dstY = srcY;
+		/* If css width or height is 0, something is bogus    */
+		/* Better to avoid divsision by 0 in that case though */
 	}
 }
 
@@ -3191,10 +3282,21 @@ static EM_BOOL OnMouseMove(int type, const EmscriptenMouseEvent* ev, void* data)
 	Input_SetNonRepeatable(KEY_RMOUSE, buttons & 0x02);
 	Input_SetNonRepeatable(KEY_MMOUSE, buttons & 0x04);
 
-	RescaleXY(ev->targetX, ev->targetY, &x, &y);
+	x = ev->targetX; y = ev->targetY;
+	RescaleXY(&x, &y);
 	Pointer_SetPosition(0, x, y);
 	if (Input_RawMode) Event_RaiseRawMove(&PointerEvents.RawMoved, ev->movementX, ev->movementY);
 	return true;
+}
+
+/* TODO: Also query mouse coordinates globally and reuse adjustXY here */
+/* Adjust from document coordinates to element coordinates */
+static void AdjustXY(int* x, int* y) {
+	EM_ASM_({
+		var canvasRect = Module['canvas'].getBoundingClientRect();
+		HEAP32[$0 >> 2] = HEAP32[$0 >> 2] - canvasRect.left;
+		HEAP32[$1 >> 2] = HEAP32[$1 >> 2] - canvasRect.top;
+	}, x, y);
 }
 
 static EM_BOOL OnTouchStart(int type, const EmscriptenTouchEvent* ev, void* data) {
@@ -3203,8 +3305,10 @@ static EM_BOOL OnTouchStart(int type, const EmscriptenTouchEvent* ev, void* data
 	for (i = 0; i < ev->numTouches; ++i) {
 		t = &ev->touches[i];
 		if (!t->isChanged) continue;
-		
-		RescaleXY(t->targetX, t->targetY, &x, &y);
+		x = t->targetX; y = t->targetY;
+
+		AdjustXY( &x, &y);
+		RescaleXY(&x, &y);
 		Input_AddTouch(t->identifier, x, y);
 	}
 	/* Don't intercept touchstart events while keyboard is open, that way */
@@ -3218,8 +3322,10 @@ static EM_BOOL OnTouchMove(int type, const EmscriptenTouchEvent* ev, void* data)
 	for (i = 0; i < ev->numTouches; ++i) {
 		t = &ev->touches[i];
 		if (!t->isChanged) continue;
-		
-		RescaleXY(t->targetX, t->targetY, &x, &y);
+		x = t->targetX; y = t->targetY;
+
+		AdjustXY( &x, &y);
+		RescaleXY(&x, &y);
 		Input_UpdateTouch(t->identifier, x, y);
 	}
 	/* Don't intercept touchmove events while keyboard is open, that way */
@@ -3233,8 +3339,10 @@ static EM_BOOL OnTouchEnd(int type, const EmscriptenTouchEvent* ev, void* data) 
 	for (i = 0; i < ev->numTouches; ++i) {
 		t = &ev->touches[i];
 		if (!t->isChanged) continue;
-		
-		RescaleXY(t->targetX, t->targetY, &x, &y);
+		x = t->targetX; y = t->targetY;
+
+		AdjustXY( &x, &y);
+		RescaleXY(&x, &y);
 		Input_RemoveTouch(t->identifier, x, y);
 	}
 	/* Don't intercept touchend events while keyboard is open, that way */
@@ -3435,6 +3543,7 @@ static void UnhookEvents(void) {
 }
 
 void Window_Init(void) {
+	int is_ios, droid;
 	DisplayInfo.Width  = GetScreenWidth();
 	DisplayInfo.Height = GetScreenHeight();
 	DisplayInfo.Depth  = 24;
@@ -3463,15 +3572,25 @@ void Window_Init(void) {
 		});
 	);
 
-	Input_TouchMode = EM_ASM_INT_V({ return /iPhone|iPad|iPod|Android/i.test(navigator.userAgent); });
+	droid  = EM_ASM_INT_V({ return /Android/i.test(navigator.userAgent); });
+	/* iOS 13 on iPad doesn't identify itself as iPad by default anymore */
+	/*  https://stackoverflow.com/questions/57765958/how-to-detect-ipad-and-ipad-os-version-in-ios-13-and-up */
+	is_ios = EM_ASM_INT_V({
+		return /iPhone|iPad|iPod/i.test(navigator.userAgent) || 
+		(navigator.platform === 'MacIntel' && navigator.maxTouchPoints && navigator.maxTouchPoints > 2);
+	});
+	Input_TouchMode = is_ios || droid;
 	Pointers_Count  = Input_TouchMode ? 0 : 1;
 
 	/* iOS shifts the whole webpage up when opening chat, which causes problems */
 	/*  as the chat/send butons are positioned at the top of the canvas - they */
 	/*  get pushed offscreen and can't be used at all anymore. So handle this */
 	/*  case specially by positioning them at the bottom instead for iOS. */
-	WindowInfo.SoftKeyboard = EM_ASM_INT_V({ return /iPhone|iPad|iPod/i.test(navigator.userAgent); }) 
-								? SOFT_KEYBOARD_SHIFT : SOFT_KEYBOARD_RESIZE;
+	WindowInfo.SoftKeyboard = is_ios ? SOFT_KEYBOARD_SHIFT : SOFT_KEYBOARD_RESIZE;
+
+	/* Let the webpage know it needs to force a mobile layout */
+	if (!Input_TouchMode) return;
+	EM_ASM( if (typeof(forceTouchLayout) === 'function') forceTouchLayout(); );
 }
 
 void Window_Create(int width, int height) {
@@ -3501,7 +3620,7 @@ void Window_Create(int width, int height) {
 
 void Window_SetTitle(const cc_string* title) {
 	char str[NATIVE_STR_LEN];
-	Platform_EncodeString(str, title);
+	Platform_EncodeUtf8(str, title);
 	EM_ASM_({ document.title = UTF8ToString($0); }, str);
 }
 
@@ -3521,7 +3640,7 @@ EMSCRIPTEN_KEEPALIVE void Window_GotClipboardText(char* src) {
 void Clipboard_GetText(cc_string* value) { }
 void Clipboard_SetText(const cc_string* value) {
 	char str[NATIVE_STR_LEN];
-	Platform_EncodeString(str, value);
+	Platform_EncodeUtf8(str, value);
 
 	/* For IE11, use window.clipboardData to set the clipboard */
 	/* For other browsers, instead use the window.copy events */
@@ -3705,11 +3824,11 @@ EMSCRIPTEN_KEEPALIVE void Window_OnTextChanged(const char* src) {
 	Event_RaiseString(&InputEvents.TextChanged, &str);
 }
 
-void Window_OpenKeyboard(const cc_string* text, int type) {
+void Window_OpenKeyboard(const struct OpenKeyboardArgs* args) {
 	char str[NATIVE_STR_LEN];
 	keyboardOpen = true;
 	if (!Input_TouchMode) return;
-	Platform_EncodeString(str, text);
+	Platform_EncodeUtf8(str, args->text);
 	Platform_LogConst("OPEN SESAME");
 
 	EM_ASM_({
@@ -3722,6 +3841,7 @@ void Window_OpenKeyboard(const cc_string* text, int type) {
 				elem = document.createElement('textarea');
 			}
 			elem.setAttribute('style', 'position:absolute; left:0; bottom:0; margin: 0px; width: 100%');
+			elem.setAttribute('placeholder', UTF8ToString($2));
 			elem.value = UTF8ToString($0);
 
 			elem.addEventListener('input', 
@@ -3738,13 +3858,13 @@ void Window_OpenKeyboard(const cc_string* text, int type) {
 		}
 		elem.focus();
 		elem.click();
-	}, str, type);
+	}, str, args->type, args->placeholder);
 }
 
 void Window_SetKeyboardText(const cc_string* text) {
 	char str[NATIVE_STR_LEN];
 	if (!Input_TouchMode) return;
-	Platform_EncodeString(str, text);
+	Platform_EncodeUtf8(str, text);
 
 	EM_ASM_({
 		if (!window.cc_inputElem) return;
@@ -4155,13 +4275,13 @@ void Window_FreeFramebuffer(struct Bitmap* bmp) {
 	Mem_Free(bmp->scan0);
 }
 
-void Window_OpenKeyboard(const cc_string* text, int type) {
+void Window_OpenKeyboard(const struct OpenKeyboardArgs* args) {
 	JNIEnv* env;
 	jvalue args[2];
 	JavaGetCurrentEnv(env);
 
-	args[0].l = JavaMakeString(env, text);
-	args[1].i = type;
+	args[0].l = JavaMakeString(env, args->text);
+	args[1].i = args->type;
 	JavaCallVoid(env, "openKeyboard", "(Ljava/lang/String;I)V", args);
 	(*env)->DeleteLocalRef(env, args[0].l);
 }
@@ -4258,12 +4378,13 @@ static EGLConfig ctx_config;
 static EGLint ctx_numConfig;
 
 #ifdef CC_BUILD_X11
-static XVisualInfo GLContext_SelectVisual(struct GraphicsMode* mode) {
+static XVisualInfo GLContext_SelectVisual(void) {
 	XVisualInfo info;
 	cc_result res;
+	int screen = DefaultScreen(win_display);
 
-	res = XMatchVisualInfo(win_display, win_screen, 24, TrueColor, &info) ||
-		  XMatchVisualInfo(win_display, win_screen, 32, TrueColor, &info);
+	res = XMatchVisualInfo(win_display, screen, 24, TrueColor, &info) ||
+		  XMatchVisualInfo(win_display, screen, 32, TrueColor, &info);
 
 	if (!res) Logger_Abort("Selecting visual");
 	return info;
@@ -4356,9 +4477,8 @@ void GLContext_GetApiInfo(cc_string* info) { }
 #elif defined CC_BUILD_WINGUI
 static HGLRC ctx_handle;
 static HDC ctx_DC;
-typedef BOOL (WINAPI *FN_WGLSWAPINTERVAL)(int interval);
-static FN_WGLSWAPINTERVAL wglSwapIntervalEXT;
-static cc_bool ctx_supports_vSync;
+typedef BOOL (WINAPI *FP_SWAPINTERVAL)(int interval);
+static FP_SWAPINTERVAL wglSwapIntervalEXT;
 
 static void GLContext_SelectGraphicsMode(struct GraphicsMode* mode) {
 	PIXELFORMATDESCRIPTOR pfd = { 0 };
@@ -4405,8 +4525,7 @@ void GLContext_Create(void) {
 	}
 
 	ctx_DC = wglGetCurrentDC();
-	wglSwapIntervalEXT = (FN_WGLSWAPINTERVAL)GLContext_GetAddress("wglSwapIntervalEXT");
-	ctx_supports_vSync = wglSwapIntervalEXT != NULL;
+	wglSwapIntervalEXT = (FP_SWAPINTERVAL)GLContext_GetAddress("wglSwapIntervalEXT");
 }
 
 void GLContext_Update(void) { }
@@ -4428,7 +4547,8 @@ cc_bool GLContext_SwapBuffers(void) {
 }
 
 void GLContext_SetFpsLimit(cc_bool vsync, float minFrameMs) {
-	if (ctx_supports_vSync) wglSwapIntervalEXT(vsync);
+	if (!wglSwapIntervalEXT) return;
+	wglSwapIntervalEXT(vsync);
 }
 void GLContext_GetApiInfo(cc_string* info) { }
 
@@ -4439,13 +4559,15 @@ void GLContext_GetApiInfo(cc_string* info) { }
 #elif defined CC_BUILD_X11
 #include <GL/glx.h>
 static GLXContext ctx_handle;
-typedef int (*FN_GLXSWAPINTERVAL)(int interval);
-static FN_GLXSWAPINTERVAL swapIntervalMESA, swapIntervalSGI;
-static cc_bool ctx_supports_vSync;
+typedef int  (*FP_SWAPINTERVAL)(int interval);
+typedef Bool (*FP_QUERYRENDERER)(int attribute, unsigned int* value);
+static FP_SWAPINTERVAL swapIntervalMESA, swapIntervalSGI;
+static FP_QUERYRENDERER queryRendererMESA;
 
 void GLContext_Create(void) {
-	static const cc_string ext_mesa = String_FromConst("GLX_MESA_swap_control");
-	static const cc_string ext_sgi  = String_FromConst("GLX_SGI_swap_control");
+	static const cc_string vsync_mesa = String_FromConst("GLX_MESA_swap_control");
+	static const cc_string vsync_sgi  = String_FromConst("GLX_SGI_swap_control");
+	static const cc_string info_mesa  = String_FromConst("GLX_MESA_query_renderer");
 
 	const char* raw_exts;
 	cc_string exts;
@@ -4466,16 +4588,18 @@ void GLContext_Create(void) {
 
 	/* GLX may return non-null function pointers that don't actually work */
 	/* So we need to manually check the extensions string for support */
-	raw_exts = glXQueryExtensionsString(win_display, win_screen);
+	raw_exts = glXQueryExtensionsString(win_display, DefaultScreen(win_display));
 	exts = String_FromReadonly(raw_exts);
 
-	if (String_CaselessContains(&exts, &ext_mesa)) {
-		swapIntervalMESA = (FN_GLXSWAPINTERVAL)GLContext_GetAddress("glXSwapIntervalMESA");
+	if (String_CaselessContains(&exts, &vsync_mesa)) {
+		swapIntervalMESA  = (FP_SWAPINTERVAL)GLContext_GetAddress("glXSwapIntervalMESA");
 	}
-	if (String_CaselessContains(&exts, &ext_sgi)) {
-		swapIntervalSGI  = (FN_GLXSWAPINTERVAL)GLContext_GetAddress("glXSwapIntervalSGI");
+	if (String_CaselessContains(&exts, &vsync_sgi)) {
+		swapIntervalSGI   = (FP_SWAPINTERVAL)GLContext_GetAddress("glXSwapIntervalSGI");
 	}
-	ctx_supports_vSync = swapIntervalMESA || swapIntervalSGI;
+	if (String_CaselessContains(&exts, &info_mesa)) {
+		queryRendererMESA = (FP_QUERYRENDERER)GLContext_GetAddress("glXQueryCurrentRendererIntegerMESA");
+	}
 }
 
 void GLContext_Update(void) { }
@@ -4498,17 +4622,24 @@ cc_bool GLContext_SwapBuffers(void) {
 }
 
 void GLContext_SetFpsLimit(cc_bool vsync, float minFrameMs) {
-	int res;
-	if (!ctx_supports_vSync) return;
-
+	int res = 0;
 	if (swapIntervalMESA) {
 		res = swapIntervalMESA(vsync);
-	} else {
+	} else if (swapIntervalSGI) {
 		res = swapIntervalSGI(vsync);
 	}
 	if (res) Platform_Log1("Set VSync failed, error: %i", &res);
 }
-void GLContext_GetApiInfo(cc_string* info) { }
+
+void GLContext_GetApiInfo(cc_string* info) {
+	unsigned int vram, acc;
+	if (!queryRendererMESA) return;
+
+	queryRendererMESA(0x8186, &acc);
+	queryRendererMESA(0x8187, &vram);
+	String_Format2(info, "VRAM: %i MB, %c", &vram,
+		acc ? "HW accelerated" : "no HW acceleration");
+}
 
 static void GetAttribs(struct GraphicsMode* mode, int* attribs, int depth) {
 	int i = 0;
@@ -4527,23 +4658,26 @@ static void GetAttribs(struct GraphicsMode* mode, int* attribs, int depth) {
 	attribs[i++] = 0;
 }
 
-static XVisualInfo GLContext_SelectVisual(struct GraphicsMode* mode) {
+static XVisualInfo GLContext_SelectVisual(void) {
 	int attribs[20];
 	int major, minor;
 	XVisualInfo* visual = NULL;
 
-	int fbcount;
+	int fbcount, screen;
 	GLXFBConfig* fbconfigs;
 	XVisualInfo info;
+	struct GraphicsMode mode;
 
-	GetAttribs(mode, attribs, GLCONTEXT_DEFAULT_DEPTH);
+	InitGraphicsMode(&mode);
+	GetAttribs(&mode, attribs, GLCONTEXT_DEFAULT_DEPTH);
 	if (!glXQueryVersion(win_display, &major, &minor)) {
 		Logger_Abort("glXQueryVersion failed");
 	}
+	screen = DefaultScreen(win_display);
 
 	if (major >= 1 && minor >= 3) {
 		/* ChooseFBConfig returns an array of GLXFBConfig opaque structures */
-		fbconfigs = glXChooseFBConfig(win_display, win_screen, attribs, &fbcount);
+		fbconfigs = glXChooseFBConfig(win_display, screen, attribs, &fbcount);
 		if (fbconfigs && fbcount) {
 			/* Use the first GLXFBConfig from the fbconfigs array (best match) */
 			visual = glXGetVisualFromFBConfig(win_display, *fbconfigs);
@@ -4553,12 +4687,12 @@ static XVisualInfo GLContext_SelectVisual(struct GraphicsMode* mode) {
 
 	if (!visual) {
 		Platform_LogConst("Falling back to glXChooseVisual.");
-		visual = glXChooseVisual(win_display, win_screen, attribs);
+		visual = glXChooseVisual(win_display, screen, attribs);
 	}
 	/* Some really old devices will only supply 16 bit depths */
 	if (!visual) {
-		GetAttribs(mode, attribs, 16);
-		visual = glXChooseVisual(win_display, win_screen, attribs);
+		GetAttribs(&mode, attribs, 16);
+		visual = glXChooseVisual(win_display, screen, attribs);
 	}
 	if (!visual) Logger_Abort("Requested GraphicsMode not available.");
 

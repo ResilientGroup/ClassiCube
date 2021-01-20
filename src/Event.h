@@ -2,7 +2,7 @@
 #define CC_EVENT_H
 #include "Vectors.h"
 /* Helper methods for using events, and contains all events.
-   Copyright 2014-2020 ClassiCube | Licensed under BSD-3
+   Copyright 2014-2021 ClassiCube | Licensed under BSD-3
 */
 
 /* Max callbacks that can be registered for an event. */
@@ -36,12 +36,6 @@ struct Event_Entry {
 typedef void (*Event_Block_Callback)(void* obj, IVec3 coords, BlockID oldBlock, BlockID block);
 struct Event_Block {
 	Event_Block_Callback Handlers[EVENT_MAX_CALLBACKS];
-	void* Objs[EVENT_MAX_CALLBACKS]; int Count;
-};
-
-typedef void (*Event_PointerMove_Callback)(void* obj, int idx, int xDelta, int yDelta);
-struct Event_PointerMove {
-	Event_PointerMove_Callback Handlers[EVENT_MAX_CALLBACKS];
 	void* Objs[EVENT_MAX_CALLBACKS]; int Count;
 };
 
@@ -90,8 +84,6 @@ void Event_RaiseEntry(struct Event_Entry* handlers, struct Stream* stream, const
 /* Calls all registered callbacks for an event which takes block change arguments. */
 /* These are the coordinates/location of the change, block there before, block there now. */
 void Event_RaiseBlock(struct Event_Block* handlers, IVec3 coords, BlockID oldBlock, BlockID block);
-/* Calls all registered callbacks for an event which has pointer movement arguments. */
-void Event_RaiseMove(struct Event_PointerMove* handlers, int idx, int xDelta, int yDelta);
 /* Calls all registered callbacks for an event which has chat message type and contents. */
 /* See MsgType enum in Chat.h for what types of messages there are. */
 void Event_RaiseChat(struct Event_Chat* handlers, const cc_string* msg, int msgType);
@@ -171,14 +163,14 @@ CC_VAR extern struct _InputEventsList {
 	struct Event_Input  Down;  /* Key or button is pressed. Arg is a member of Key enumeration */
 	struct Event_Int    Up;    /* Key or button is released. Arg is a member of Key enumeration */
 	struct Event_Float  Wheel; /* Mouse wheel is moved/scrolled (Arg is wheel delta) */
-	struct Event_String TextChanged; /* HTML text input changed */
+	struct Event_String TextChanged; /* Text in the on-screen input keyboard changed (for Mobile) */
 } InputEvents;
 
 CC_VAR extern struct _PointerEventsList {
-	struct Event_PointerMove Moved; /* Pointer position changed (Arg is delta from last position) */
-	struct Event_Int         Down;  /* Left mouse or touch is pressed (Arg is index) */
-	struct Event_Int         Up;    /* Left mouse or touch is released (Arg is index) */
-	struct Event_RawMove RawMoved;  /* Raw pointer position changed (Arg is delta) */
+	struct Event_Int        Moved; /* Pointer position changed (Arg is index) */
+	struct Event_Int         Down; /* Left mouse or touch is pressed (Arg is index) */
+	struct Event_Int         Up;   /* Left mouse or touch is released (Arg is index) */
+	struct Event_RawMove RawMoved; /* Raw pointer position changed (Arg is delta) */
 } PointerEvents;
 
 CC_VAR extern struct _NetEventsList {

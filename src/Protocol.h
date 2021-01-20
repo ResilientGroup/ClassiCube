@@ -2,8 +2,9 @@
 #define CC_PROTOCOL_H
 #include "Vectors.h"
 /* Implements network protocols for original classic, CPE, and WoM textures.
-   Copyright 2014-2020 ClassiCube | Licensed under BSD-3
+   Copyright 2014-2021 ClassiCube | Licensed under BSD-3
 */
+struct RayTracer;
 
 enum OPCODE_ {
 	OPCODE_HANDSHAKE,             OPCODE_PING,

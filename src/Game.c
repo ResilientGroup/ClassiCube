@@ -54,7 +54,7 @@ cc_bool Game_ClassicMode, Game_ClassicHacks;
 cc_bool Game_AllowCustomBlocks, Game_UseCPE;
 cc_bool Game_AllowServerTextures;
 
-cc_bool Game_ViewBobbing, Game_HideGui;
+cc_bool Game_ViewBobbing, Game_HideGui, Game_DefaultZipMissing;
 cc_bool Game_BreakableLiquids, Game_ScreenshotRequested;
 
 static char usernameBuffer[FILENAME_SIZE];
@@ -342,6 +342,7 @@ static void LoadPlugins(void) {
 	static const cc_string dir = String_FromConst("plugins");
 	cc_result res;
 
+	Utils_EnsureDirectory("plugins");
 	res = Directory_Enum(&dir, NULL, LoadPlugin);
 	if (res) Logger_SysWarn(res, "enumerating plugins directory");
 }
@@ -351,9 +352,11 @@ void Game_Free(void* obj);
 static void Game_Load(void) {
 	struct IGameComponent* comp;
 	Game_UpdateDimensions();
+	Game_SetFpsLimit(Options_GetEnum(OPT_FPS_LIMIT, 0, FpsLimit_Names, FPS_LIMIT_COUNT));
 	Gfx_Create();
 	Logger_WarnFunc = Game_WarnFunc;
 	LoadOptions();
+	Utils_EnsureDirectory("maps");
 
 	Event_Register_(&WorldEvents.NewMap,        NULL, HandleOnNewMap);
 	Event_Register_(&WorldEvents.MapLoaded,     NULL, HandleOnNewMapLoaded);
@@ -361,6 +364,7 @@ static void Game_Load(void) {
 	Event_Register_(&WindowEvents.Resized,      NULL, Game_OnResize);
 	Event_Register_(&WindowEvents.Closing,      NULL, Game_Free);
 
+	Game_AddComponent(&World_Component);
 	Game_AddComponent(&Textures_Component);
 	Game_AddComponent(&Input_Component);
 	Game_AddComponent(&Camera_Component);
@@ -371,7 +375,6 @@ static void Game_Load(void) {
 	Game_AddComponent(&Chat_Component);
 	Game_AddComponent(&Particles_Component);
 	Game_AddComponent(&TabList_Component);
-
 	Game_AddComponent(&Models_Component);
 	Game_AddComponent(&Entities_Component);
 	Game_AddComponent(&Http_Component);
@@ -379,8 +382,6 @@ static void Game_Load(void) {
 
 	Game_AddComponent(&Animations_Component);
 	Game_AddComponent(&Inventory_Component);
-	World_Reset();
-
 	Game_AddComponent(&Builder_Component);
 	Game_AddComponent(&MapRenderer_Component);
 	Game_AddComponent(&EnvRenderer_Component);
@@ -391,7 +392,6 @@ static void Game_Load(void) {
 	Game_AddComponent(&Selections_Component);
 	Game_AddComponent(&HeldBlockRenderer_Component);
 	/* Gfx_SetDepthWrite(true) */
-
 	Game_AddComponent(&PickedPosRenderer_Component);
 	Game_AddComponent(&Audio_Component);
 	Game_AddComponent(&AxisLinesRenderer_Component);
@@ -401,13 +401,14 @@ static void Game_Load(void) {
 		if (comp->Init) comp->Init();
 	}
 
+	Game_DefaultZipMissing = false;
 	TexturePack_ExtractCurrent(false);
+	if (Game_DefaultZipMissing) {
+		Window_ShowDialog("Missing file",
+			"default.zip is missing, try downloading resources first.\n\nThe game will still run, but without any textures");
+	}
+
 	entTaskI = ScheduledTask_Add(GAME_DEF_TICKS, Entities_Tick);
-
-	/* set vsync after because it causes a context loss depending on backend */
-	Gfx_SetFpsLimit(true, 0);
-	Game_SetFpsLimit(Options_GetEnum(OPT_FPS_LIMIT, 0, FpsLimit_Names, FPS_LIMIT_COUNT));
-
 	if (Gfx_WarnIfNecessary()) EnvRenderer_SetMode(EnvRenderer_Minimal | ENV_LEGACY);
 	Server.BeginConnect();
 }
@@ -501,9 +502,7 @@ void Game_TakeScreenshot(void) {
 #else
 	struct Stream stream;
 #endif
-
 	Game_ScreenshotRequested = false;
-	if (!Utils_EnsureDirectory("screenshots")) return;
 	DateTime_CurrentLocal(&now);
 
 	String_InitArray(filename, fileBuffer);
@@ -511,7 +510,7 @@ void Game_TakeScreenshot(void) {
 	String_Format3(&filename, "-%p2-%p2-%p2.png", &now.hour, &now.minute, &now.second);
 
 #ifdef CC_BUILD_WEB
-	Platform_EncodeString(str, &filename);
+	Platform_EncodeUtf8(str, &filename);
 	EM_ASM_({
 		var name   = UTF8ToString($0);
 		var canvas = Module['canvas'];
@@ -524,6 +523,7 @@ void Game_TakeScreenshot(void) {
 #elif CC_BUILD_MINFILES
 	/* no screenshots for these systems */
 #else
+	if (!Utils_EnsureDirectory("screenshots")) return;
 	String_InitArray(path, pathBuffer);
 	String_Format1(&path, "screenshots/%s", &filename);
 
@@ -574,9 +574,9 @@ static void Game_RenderFrame(double delta) {
 	Game_Vertices = 0;
 
 	Camera.Active->UpdateMouse(delta);
-	if (!WindowInfo.Focused && !Gui_GetInputGrab()) Gui_ShowPauseMenu();
+	if (!WindowInfo.Focused && !Gui.InputGrab) Gui_ShowPauseMenu();
 
-	if (KeyBind_IsPressed(KEYBIND_ZOOM_SCROLL) && !Gui_GetInputGrab()) {
+	if (KeyBind_IsPressed(KEYBIND_ZOOM_SCROLL) && !Gui.InputGrab) {
 		InputHandler_SetFOV(Camera.ZoomFov);
 	}
 
@@ -622,7 +622,6 @@ void Game_Free(void* obj) {
 	Logger_WarnFunc = Logger_DialogWarn;
 	Gfx_Free();
 	Options_SaveIfChanged();
-	World_Reset();
 }
 
 #define Game_DoFrameBody() \
@@ -646,6 +645,9 @@ static void Game_DoFrame(void) {
 static void Game_RunLoop(void) {
 	lastRender = Stopwatch_Measure();
 	emscripten_set_main_loop(Game_DoFrame, 0, false);
+	/* The Game_SetFpsLimit call back in Game_Load does nothing because no main loop yet */
+	/*  Now thats there's a main loop, Game_SetFpsLimit will actually do something */
+	Game_SetFpsLimit(Options_GetEnum(OPT_FPS_LIMIT, 0, FpsLimit_Names, FPS_LIMIT_COUNT));
 }
 #else
 static void Game_RunLoop(void) {

@@ -9,6 +9,8 @@
 #include "Options.h"
 #include "PackedCol.h"
 #include "Errors.h"
+#include "Game.h"
+#include "Utils.h"
 
 /*########################################################################################################################*
 *----------------------------------------------------------JSON-----------------------------------------------------------*
@@ -239,6 +241,8 @@ static void GetTokenTask_OnValue(struct JsonContext* ctx, const cc_string* str) 
 		String_Copy(&GetTokenTask.token, str);
 	} else if (String_CaselessEqualsConst(&ctx->curKey, "username")) {
 		String_Copy(&GetTokenTask.username, str);
+	} else if (String_CaselessEqualsConst(&ctx->curKey, "errors")) {
+		if (str->length) GetTokenTask.error = true;
 	}
 }
 
@@ -247,7 +251,7 @@ static void GetTokenTask_Handle(cc_uint8* data, cc_uint32 len) {
 }
 
 void GetTokenTask_Run(void) {
-	static const cc_string url = String_FromConst("https://www.classicube.net/api/login");
+	static const cc_string url = String_FromConst(SERVICES_SERVER "/login");
 	static char tokenBuffer[STRING_SIZE];
 	static char userBuffer[STRING_SIZE];
 	if (GetTokenTask.Base.working) return;
@@ -255,6 +259,7 @@ void GetTokenTask_Run(void) {
 	LWebTask_Reset(&GetTokenTask.Base);
 	String_InitArray(GetTokenTask.token,    tokenBuffer);
 	String_InitArray(GetTokenTask.username, userBuffer);
+	GetTokenTask.error = false;
 
 	GetTokenTask.Base.Handle = GetTokenTask_Handle;
 	GetTokenTask.Base.reqID  = Http_AsyncGetDataEx(&url, false, NULL, NULL, &ccCookies);
@@ -304,7 +309,7 @@ static void SignInTask_Append(cc_string* dst, const char* key, const cc_string* 
 }
 
 void SignInTask_Run(const cc_string* user, const cc_string* pass, const cc_string* mfaCode) {
-	static const cc_string url = String_FromConst("https://www.classicube.net/api/login");
+	static const cc_string url = String_FromConst(SERVICES_SERVER "/login");
 	static char userBuffer[STRING_SIZE];
 	cc_string args; char argsBuffer[1024];
 	if (SignInTask.Base.working) return;
@@ -391,7 +396,7 @@ void FetchServerTask_Run(const cc_string* hash) {
 	LWebTask_Reset(&FetchServerTask.Base);
 	ServerInfo_Init(&FetchServerTask.server);
 	String_InitArray(url, urlBuffer);
-	String_Format1(&url, "https://www.classicube.net/api/server/%s", hash);
+	String_Format1(&url, SERVICES_SERVER "/server/%s", hash);
 
 	FetchServerTask.Base.Handle = FetchServerTask_Handle;
 	FetchServerTask.Base.reqID  = Http_AsyncGetDataEx(&url, false, NULL, NULL, &ccCookies);
@@ -416,6 +421,7 @@ static void FetchServersTask_Handle(cc_uint8* data, cc_uint32 len) {
 	int count;
 	Mem_Free(FetchServersTask.servers);
 	Mem_Free(FetchServersTask.orders);
+	Session_Save();
 
 	FetchServersTask.numServers = 0;
 	FetchServersTask.servers    = NULL;
@@ -436,7 +442,7 @@ static void FetchServersTask_Handle(cc_uint8* data, cc_uint32 len) {
 }
 
 void FetchServersTask_Run(void) {
-	static const cc_string url = String_FromConst("https://www.classicube.net/api/servers");
+	static const cc_string url = String_FromConst(SERVICES_SERVER "/servers");
 	if (FetchServersTask.Base.working) return;
 	LWebTask_Reset(&FetchServersTask.Base);
 
@@ -484,7 +490,7 @@ static void CheckUpdateTask_Handle(cc_uint8* data, cc_uint32 len) {
 }
 
 void CheckUpdateTask_Run(void) {
-	static const cc_string url = String_FromConst("http://cs.classicube.net/client/builds.json");
+	static const cc_string url = String_FromConst(UPDATES_SERVER "/builds.json");
 	if (CheckUpdateTask.Base.working) return;
 
 	LWebTask_Reset(&CheckUpdateTask.Base);
@@ -521,7 +527,7 @@ void FetchUpdateTask_Run(cc_bool release, cc_bool d3d9) {
 	cc_string url; char urlBuffer[URL_MAX_SIZE];
 	String_InitArray(url, urlBuffer);
 
-	String_Format2(&url, "http://cs.classicube.net/client/%c/%c",
+	String_Format2(&url, UPDATES_SERVER "/%c/%c",
 		release ? "release"    : "latest",
 		d3d9    ? Updater_D3D9 : Updater_OGL);
 
@@ -533,7 +539,7 @@ void FetchUpdateTask_Run(cc_bool release, cc_bool d3d9) {
 
 
 /*########################################################################################################################*
-*-----------------------------------------------------FetchFlagsTask-----------------------------------------------------*
+*-----------------------------------------------------FetchFlagsTask------------------------------------------------------*
 *#########################################################################################################################*/
 struct FetchFlagsData FetchFlagsTask;
 static int flagsCount, flagsCapacity;
@@ -584,7 +590,7 @@ static void FetchFlagsTask_DownloadNext(void) {
 	if (FetchFlagsTask.count == flagsCount) return;
 
 	LWebTask_Reset(&FetchFlagsTask.Base);
-	String_Format2(&url, "http://static.classicube.net/img/flags/%r%r.png",
+	String_Format2(&url, RESOURCE_SERVER "/img/flags/%r%r.png",
 			&flags[FetchFlagsTask.count].country[0], &flags[FetchFlagsTask.count].country[1]);
 
 	FetchFlagsTask.Base.Handle = FetchFlagsTask_Handle;
@@ -638,5 +644,33 @@ void Flags_Free(void) {
 
     flagsCount = 0;
     FetchFlagsTask.count = 0;
+}
+
+
+/*########################################################################################################################*
+*------------------------------------------------------Session cache------------------------------------------------------*
+*#########################################################################################################################*/
+static cc_string sessionKey = String_FromConst("session");
+static cc_bool loadedSession;
+
+void Session_Load(void) {
+	cc_string session; char buffer[3072];
+	if (loadedSession) return;
+	loadedSession = true;
+	/* Increase from max 512 to 2048 per entry */
+	StringsBuffer_SetLengthBits(&ccCookies, 11);
+
+	String_InitArray(session, buffer);
+	Options_GetSecure(LOPT_SESSION, &session, &Game_Username);
+	if (!session.length) return;
+	EntryList_Set(&ccCookies, &sessionKey, &session, '=');
+}
+
+void Session_Save(void) {
+#if defined CC_BUILD_WIN || defined CC_BUILD_LINUX || defined CC_BUILD_MACOS
+	cc_string session = EntryList_UNSAFE_Get(&ccCookies, &sessionKey, '=');
+	if (!session.length) return;
+	Options_SetSecure(LOPT_SESSION, &session, &Game_Username);
+#endif
 }
 #endif
