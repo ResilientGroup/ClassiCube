@@ -1,10 +1,10 @@
-ClassiCube is a custom Minecraft Classic and ClassiCube client written in C that works on Windows, OSX, Linux, BSD, Solaris, Haiku, and in a browser.
+ClassiCube is a custom Minecraft Classic and ClassiCube client written in C that works on Windows, macOS, Linux, Android, FreeBSD, NetBSD, OpenBSD, Solaris, Haiku, and in a browser.
 **It is not affiliated with (or supported by) Mojang AB, Minecraft, or Microsoft in any way.**
 
 ![screenshot_n](http://i.imgur.com/FCiwl27.png)
 
 
-You can grab the latest stable binaries [from here](https://www.classicube.net/download/) and the very latest builds [from here](https://www.classicube.net/nightlies/).
+You can download the game [from here](https://www.classicube.net/download/) and the very latest builds [from here](https://www.classicube.net/nightlies/).
 
 #### What ClassiCube is
 * A complete re-implementation of Minecraft Classic, with optional additions.
@@ -14,9 +14,10 @@ You can grab the latest stable binaries [from here](https://www.classicube.net/d
 It **does not** work with 'modern/premium' Minecraft servers.
 
 #### Requirements
-* Windows: 2000 or later. (Windows 98 with KernelEx also *technically* works)
-* macOS: macOS 10.5 or later. (Can be compiled to work with 10.3/10.4 though)
+* Windows: 98 or later.
+* macOS: 10.5 or later. (Can be compiled to work with 10.3/10.4 though)
 * Linux: libcurl and libopenal.
+* Android: 2.3 or later.
 
 **Note:** When running from within VirtualBox, disable Mouse Integration, otherwise the camera will not work properly.
 
@@ -30,8 +31,10 @@ Run ClassiCube.exe, then click Singleplayer at the main menu.
 **Multiplayer**
 Run ClassiCube.exe. You can connect to LAN/locally hosted servers, ~~minecraft.net servers,~~ and classicube.net servers through the launcher.
 
-###### *Windows specific*
-*If you are stuck using the built-in OpenGL 1.1 software renderer, you can use the MESA software renderer from [here](http://download.qt.io/development_releases/prebuilt/llvmpipe/windows/) for slightly better performance. Typically though, this occurs because you have not installed GPU drivers.*
+###### *Stuck with OpenGL 1.1 due to old graphics hardware?*
+If you're on Windows, you should first try using the MESA software renderer from [here](http://download.qt.io/development_releases/prebuilt/llvmpipe/windows/). Typically though, this occurs because you have not installed GPU drivers.
+
+Otherwise, you will have to [compile the game yourself](#using-visual-studio-command-line). Don't forget to add `-DCC_BUILD_GL11` to the compilation command line so that the compiled game supports OpenGL 1.1.
 
 ### Compiling - Windows
 
@@ -84,7 +87,7 @@ Although the regular linux compiliation flags will work fine, to take full advan
 
 ##### Using gcc/clang (64 bit)
 
-```cc *.c -o ClassiCube -framework Cocoa -framework OpenGL -framework IOKit -lobjc```
+```cc *.c interop_cocoa.m -o ClassiCube -framework Cocoa -framework OpenGL -framework IOKit -lobjc```
 
 ### Compiling - other desktop OSes
 
@@ -124,7 +127,7 @@ NOTE: You have to change entry->d_type == DT_DIR to Directory_Exists(&path) (TOD
 
 #### Web
 
-```emcc *.c -s ALLOW_MEMORY_GROWTH=1 --preload-file texpacks/default.zip```
+```emcc *.c -s ALLOW_MEMORY_GROWTH=1 --js-library interop_web.js --preload-file texpacks/default.zip```
 
 The generated javascript file has some issues. [See here for how to fix](doc/compile-fixes.md#webclient-patches)
 
@@ -166,9 +169,9 @@ Further information (e.g. style) for the game's source code can be found in the 
 
 ## Open source technologies
 
-* curl - HTTP/HTTPS for linux and macOS
-* FreeType - Font handling for all platforms
-* GCC - Compiles client for linux
-* MinGW-w64 - Compiles client for windows
-* Clang - Compiles client for macOS
-* Emscripten - Compiles client for web
+* [curl](https://curl.se/) - HTTP/HTTPS for linux and macOS
+* [FreeType](https://www.freetype.org/) - Font handling for all platforms
+* [GCC](https://gcc.gnu.org/) - Compiles client for linux
+* [MinGW-w64](http://mingw-w64.org/doku.php) - Compiles client for windows
+* [Clang](https://clang.llvm.org/) - Compiles client for macOS
+* [Emscripten](https://emscripten.org/) - Compiles client for web

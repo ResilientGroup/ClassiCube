@@ -162,11 +162,11 @@ static void LButton_Draw(void* widget) {
 	LButton_DrawBorder(w);
 	LButton_DrawHighlight(w);
 
-	if (!w->hovered) Drawer2D_Cols['f'] = Drawer2D_Cols['7'];
+	if (!w->hovered) Drawer2D.Colors['f'] = Drawer2D.Colors['7'];
 	Drawer2D_DrawText(&Launcher_Framebuffer, &args, 
 					  w->x + xOffset / 2, w->y + yOffset / 2);
 
-	if (!w->hovered) Drawer2D_Cols['f'] = Drawer2D_Cols['F'];
+	if (!w->hovered) Drawer2D.Colors['f'] = Drawer2D.Colors['F'];
 	Launcher_MarkDirty(w->x, w->y, w->width, w->height);
 }
 
@@ -310,9 +310,9 @@ static void LInput_Draw(void* widget) {
 		w->width - xBorder4, w->height - yBorder4);
 	LInput_BlendBoxTop(w);
 
-	Drawer2D_Cols['f'] = Drawer2D_Cols['0'];
+	Drawer2D.Colors['f'] = Drawer2D.Colors['0'];
 	LInput_DrawText(w, &args);
-	Drawer2D_Cols['f'] = Drawer2D_Cols['F'];
+	Drawer2D.Colors['f'] = Drawer2D.Colors['F'];
 }
 
 static Rect2D LInput_MeasureCaret(struct LInput* w) {
@@ -438,13 +438,16 @@ static void LInput_Unselect(void* widget, int idx) {
 	Window_CloseKeyboard();
 }
 
-static void LInput_CopyFromClipboard(cc_string* text, void* widget) {
-	struct LInput* w = (struct LInput*)widget;
-	String_UNSAFE_TrimStart(text);
-	String_UNSAFE_TrimEnd(text);
+static void LInput_CopyFromClipboard(struct LInput* w) {
+	cc_string text; char textBuffer[2048];
+	String_InitArray(text, textBuffer);
 
-	if (w->ClipboardFilter) w->ClipboardFilter(text);
-	LInput_AppendString(w, text);
+	Clipboard_GetText(&text);
+	String_UNSAFE_TrimStart(&text);
+	String_UNSAFE_TrimEnd(&text);
+
+	if (w->ClipboardFilter) w->ClipboardFilter(&text);
+	LInput_AppendString(w, &text);
 }
 
 static void LInput_KeyDown(void* widget, int key, cc_bool was) {
@@ -453,10 +456,10 @@ static void LInput_KeyDown(void* widget, int key, cc_bool was) {
 		LInput_Backspace(w);
 	} else if (key == KEY_DELETE) {
 		LInput_Delete(w);
-	} else if (key == 'C' && Key_IsActionPressed()) {
+	} else if (key == INPUT_CLIPBOARD_COPY) {
 		if (w->text.length) Clipboard_SetText(&w->text);
-	} else if (key == 'V' && Key_IsActionPressed()) {
-		Clipboard_RequestText(LInput_CopyFromClipboard, w);
+	} else if (key == INPUT_CLIPBOARD_PASTE) {
+		LInput_CopyFromClipboard(w);
 	} else if (key == KEY_ESCAPE) {
 		LInput_Clear(w);
 	} else if (key == KEY_LEFT) {
@@ -526,6 +529,11 @@ void LInput_SetText(struct LInput* w, const cc_string* text_) {
 	LInput_ClampCaret(w);
 }
 
+void LInput_ClearText(struct LInput* w) {
+	w->text.length = 0;
+	w->caretPos    = -1;
+}
+
 static CC_NOINLINE cc_bool LInput_AppendRaw(struct LInput* w, char c) {
 	if (w->TextFilter(c) && w->text.length < w->text.capacity) {
 		if (w->caretPos == -1) {
@@ -584,10 +592,9 @@ void LInput_Delete(struct LInput* w) {
 
 void LInput_Clear(struct LInput* w) {
 	if (!w->text.length) return;
-	w->text.length = 0;
+	LInput_ClearText(w);
 
 	if (w->TextChanged) w->TextChanged(w);
-	w->caretPos = -1;
 	LWidget_Redraw(w);
 }
 
@@ -1169,9 +1176,6 @@ void LTable_Reset(struct LTable* w) {
 	w->rowsCount = 0;
 	sortingCol   = -1;
 	w->_wheelAcc = 0.0f;
-
-	w->selectedHash->length = 0;
-	w->filter->length       = 0;
 }
 
 void LTable_ApplyFilter(struct LTable* w) {

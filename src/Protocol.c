@@ -468,7 +468,10 @@ static void Classic_StartLoading(void) {
 }
 
 static void Classic_LevelInit(cc_uint8* data) {
-	if (!map_begunLoading) Classic_StartLoading();
+	/* in case server is buggy and sends LevelInit multiple times */
+	if (map_begunLoading) return;
+
+	Classic_StartLoading();
 	if (!cpe_fastMap) return;
 
 	/* Fast map puts volume in header, and uses raw DEFLATE without GZIP header/footer */
@@ -737,9 +740,12 @@ static void Classic_Reset(void) {
 }
 
 static void Classic_Tick(void) {
-	struct Entity* p = &LocalPlayer_Instance.Base;
+	struct LocalPlayer* p = &LocalPlayer_Instance;
+	struct Entity* e      = &LocalPlayer_Instance.Base;
 	if (!classic_receivedFirstPos) return;
-	Classic_WritePosition(p->Position, p->Yaw, p->Pitch);
+	/* Report end position of each physics tick, rather than current position */
+	/*  (otherwise can miss landing on a block then jumping off of it again) */
+	Classic_WritePosition(p->Interp.Next.Pos, e->Yaw, e->Pitch);
 }
 
 
@@ -1199,7 +1205,7 @@ static void CPE_SetTextColor(cc_uint8* data) {
 	if (code == '\0' || code == ' ' || code == 0xFF) return;
 	if (code == '%'  || code == '&') return;
 
-	Drawer2D_Cols[code] = c;
+	Drawer2D.Colors[code] = c;
 	Event_RaiseInt(&ChatEvents.ColCodeChanged, code);
 }
 

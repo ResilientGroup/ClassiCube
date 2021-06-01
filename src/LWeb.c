@@ -9,7 +9,6 @@
 #include "Options.h"
 #include "PackedCol.h"
 #include "Errors.h"
-#include "Game.h"
 #include "Utils.h"
 
 /*########################################################################################################################*
@@ -109,43 +108,47 @@ static void Json_ConsumeObject(struct JsonContext* ctx) {
 	char keyBuffer[STRING_SIZE];
 	cc_string value, oldKey = ctx->curKey;
 	int token;
+	ctx->depth++;
 	ctx->OnNewObject(ctx);
 
 	while (true) {
 		token = Json_ConsumeToken(ctx);
 		if (token == ',') continue;
-		if (token == '}') return;
+		if (token == '}') break;
 
-		if (token != '"') { ctx->failed = true; return; }
+		if (token != '"') { ctx->failed = true; break; }
 		String_InitArray(ctx->curKey, keyBuffer);
 		Json_ConsumeString(ctx, &ctx->curKey);
 
 		token = Json_ConsumeToken(ctx);
-		if (token != ':') { ctx->failed = true; return; }
+		if (token != ':') { ctx->failed = true; break; }
 
 		token = Json_ConsumeToken(ctx);
-		if (token == TOKEN_NONE) { ctx->failed = true; return; }
+		if (token == TOKEN_NONE) { ctx->failed = true; break; }
 
 		value = Json_ConsumeValue(token, ctx);
 		ctx->OnValue(ctx, &value);
 		ctx->curKey = oldKey;
 	}
+	ctx->depth--;
 }
 
 static void Json_ConsumeArray(struct JsonContext* ctx) {
 	cc_string value;
 	int token;
+	ctx->depth++;
 	ctx->OnNewArray(ctx);
 
 	while (true) {
 		token = Json_ConsumeToken(ctx);
 		if (token == ',') continue;
-		if (token == ']') return;
+		if (token == ']') break;
 
-		if (token == TOKEN_NONE) { ctx->failed = true; return; }
+		if (token == TOKEN_NONE) { ctx->failed = true; break; }
 		value = Json_ConsumeValue(token, ctx);
 		ctx->OnValue(ctx, &value);
 	}
+	ctx->depth--;
 }
 
 static cc_string Json_ConsumeValue(int token, struct JsonContext* ctx) {
@@ -169,6 +172,7 @@ void Json_Init(struct JsonContext* ctx, STRING_REF char* str, int len) {
 	ctx->left   = len;
 	ctx->failed = false;
 	ctx->curKey = String_Empty;
+	ctx->depth  = 0;
 
 	ctx->OnNewArray  = Json_NullOnNew;
 	ctx->OnNewObject = Json_NullOnNew;
@@ -200,6 +204,9 @@ static void Json_Handle(cc_uint8* data, cc_uint32 len,
 /*########################################################################################################################*
 *--------------------------------------------------------Web task---------------------------------------------------------*
 *#########################################################################################################################*/
+static char servicesBuffer[FILENAME_SIZE];
+static cc_string servicesServer = String_FromArray(servicesBuffer);
+
 static void LWebTask_Reset(struct LWebTask* task) {
 	task->completed = false;
 	task->working   = true;
@@ -229,6 +236,10 @@ void LWebTask_DisplayError(struct LWebTask* task, const char* action, cc_string*
 	Launcher_DisplayHttpError(task->res, task->status, action, dst);
 }
 
+void LWebTasks_Init(void) {
+	Options_Get(SOPT_SERVICES, &servicesServer, SERVICES_SERVER);
+}
+
 
 /*########################################################################################################################*
 *-------------------------------------------------------GetTokenTask------------------------------------------------------*
@@ -251,12 +262,15 @@ static void GetTokenTask_Handle(cc_uint8* data, cc_uint32 len) {
 }
 
 void GetTokenTask_Run(void) {
-	static const cc_string url = String_FromConst(SERVICES_SERVER "/login");
+	cc_string url; char urlBuffer[URL_MAX_SIZE];
 	static char tokenBuffer[STRING_SIZE];
 	static char userBuffer[STRING_SIZE];
 	if (GetTokenTask.Base.working) return;
 
 	LWebTask_Reset(&GetTokenTask.Base);
+	String_InitArray(url, urlBuffer);
+	String_Format1(&url, "%s/login", &servicesServer);
+
 	String_InitArray(GetTokenTask.token,    tokenBuffer);
 	String_InitArray(GetTokenTask.username, userBuffer);
 	GetTokenTask.error = false;
@@ -309,12 +323,15 @@ static void SignInTask_Append(cc_string* dst, const char* key, const cc_string* 
 }
 
 void SignInTask_Run(const cc_string* user, const cc_string* pass, const cc_string* mfaCode) {
-	static const cc_string url = String_FromConst(SERVICES_SERVER "/login");
+	cc_string url; char urlBuffer[URL_MAX_SIZE];
 	static char userBuffer[STRING_SIZE];
 	cc_string args; char argsBuffer[1024];
 	if (SignInTask.Base.working) return;
 
 	LWebTask_Reset(&SignInTask.Base);
+	String_InitArray(url, urlBuffer);
+	String_Format1(&url, "%s/login", &servicesServer);
+
 	String_InitArray(SignInTask.username, userBuffer);
 	SignInTask.error   = NULL;
 	SignInTask.needMFA = false;
@@ -396,7 +413,7 @@ void FetchServerTask_Run(const cc_string* hash) {
 	LWebTask_Reset(&FetchServerTask.Base);
 	ServerInfo_Init(&FetchServerTask.server);
 	String_InitArray(url, urlBuffer);
-	String_Format1(&url, SERVICES_SERVER "/server/%s", hash);
+	String_Format2(&url, "%s/server/%s", &servicesServer, hash);
 
 	FetchServerTask.Base.Handle = FetchServerTask_Handle;
 	FetchServerTask.Base.reqID  = Http_AsyncGetDataEx(&url, false, NULL, NULL, &ccCookies);
@@ -408,12 +425,19 @@ void FetchServerTask_Run(const cc_string* hash) {
 *#########################################################################################################################*/
 struct FetchServersData FetchServersTask;
 static void FetchServersTask_Count(struct JsonContext* ctx) {
+	/* JSON is expected in this format: */
+	/*  { "servers" :      (depth = 1)  */
+	/*    [                (depth = 2)  */
+	/*	     { server1 },  (depth = 3)  */
+	/*		 { server2 },  (depth = 3)  */
+	/*          ...                     */
+	if (ctx->depth != 3) return;
 	FetchServersTask.numServers++;
 }
 
 static void FetchServersTask_Next(struct JsonContext* ctx) {
+	if (ctx->depth != 3) return;
 	curServer++;
-	if (curServer < FetchServersTask.servers) return;
 	ServerInfo_Init(curServer);
 }
 
@@ -427,8 +451,7 @@ static void FetchServersTask_Handle(cc_uint8* data, cc_uint32 len) {
 	FetchServersTask.servers    = NULL;
 	FetchServersTask.orders     = NULL;
 
-	/* -1 because servers is surrounded by a { */
-	FetchServersTask.numServers = -1;
+	FetchServersTask.numServers = 0;
 	Json_Handle(data, len, NULL, NULL, FetchServersTask_Count);
 	count = FetchServersTask.numServers;
 
@@ -436,15 +459,17 @@ static void FetchServersTask_Handle(cc_uint8* data, cc_uint32 len) {
 	FetchServersTask.servers = (struct ServerInfo*)Mem_Alloc(count, sizeof(struct ServerInfo), "servers list");
 	FetchServersTask.orders  = (cc_uint16*)Mem_Alloc(count, 2, "servers order");
 
-	/* -2 because servers is surrounded by a { */
-	curServer = FetchServersTask.servers - 2;
+	curServer = FetchServersTask.servers - 1;
 	Json_Handle(data, len, ServerInfo_Parse, NULL, FetchServersTask_Next);
 }
 
 void FetchServersTask_Run(void) {
-	static const cc_string url = String_FromConst(SERVICES_SERVER "/servers");
+	cc_string url; char urlBuffer[URL_MAX_SIZE];
 	if (FetchServersTask.Base.working) return;
+
 	LWebTask_Reset(&FetchServersTask.Base);
+	String_InitArray(url, urlBuffer);
+	String_Format1(&url, "%s/servers", &servicesServer);
 
 	FetchServersTask.Base.Handle = FetchServersTask_Handle;
 	FetchServersTask.Base.reqID  = Http_AsyncGetDataEx(&url, false, NULL, NULL, &ccCookies);
@@ -661,16 +686,14 @@ void Session_Load(void) {
 	StringsBuffer_SetLengthBits(&ccCookies, 11);
 
 	String_InitArray(session, buffer);
-	Options_GetSecure(LOPT_SESSION, &session, &Game_Username);
+	Options_GetSecure(LOPT_SESSION, &session);
 	if (!session.length) return;
 	EntryList_Set(&ccCookies, &sessionKey, &session, '=');
 }
 
 void Session_Save(void) {
-#if defined CC_BUILD_WIN || defined CC_BUILD_LINUX || defined CC_BUILD_MACOS
 	cc_string session = EntryList_UNSAFE_Get(&ccCookies, &sessionKey, '=');
 	if (!session.length) return;
-	Options_SetSecure(LOPT_SESSION, &session, &Game_Username);
-#endif
+	Options_SetSecure(LOPT_SESSION, &session);
 }
 #endif

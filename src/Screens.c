@@ -69,31 +69,37 @@ static struct HUDScreen {
 	struct TextWidget line1, line2;
 	struct TextAtlas posAtlas;
 	double accumulator;
-	int frames, fps;
+	int frames;
 	cc_bool hacksChanged;
 	float lastSpeed;
 	int lastFov;
 	struct HotbarWidget hotbar;
 } HUDScreen_Instance;
 
-static void HUDScreen_MakeText(struct HUDScreen* s, cc_string* status) {
+static void HUDScreen_UpdateLine1(struct HUDScreen* s) {
+	cc_string status; char statusBuffer[STRING_SIZE * 2];
 	int indices, ping;
-	s->fps = (int)(s->frames / s->accumulator);
-	String_Format1(status, "%i fps, ", &s->fps);
+	int fps = (int)(s->frames / s->accumulator);
+
+	String_InitArray(status, statusBuffer);
+	String_Format1(&status, "%i fps, ", &fps);
+	/* Don't remake texture when FPS isn't being shown */
+	if (!Gui.ShowFPS && s->line1.tex.ID) return;
 
 	if (Game_ClassicMode) {
-		String_Format1(status, "%i chunk updates", &Game.ChunkUpdates);
+		String_Format1(&status, "%i chunk updates", &Game.ChunkUpdates);
 	} else {
 		if (Game.ChunkUpdates) {
-			String_Format1(status, "%i chunks/s, ", &Game.ChunkUpdates);
+			String_Format1(&status, "%i chunks/s, ", &Game.ChunkUpdates);
 		}
 
 		indices = ICOUNT(Game_Vertices);
-		String_Format1(status, "%i vertices", &indices);
+		String_Format1(&status, "%i vertices", &indices);
 
 		ping = Ping_AveragePingMS();
-		if (ping) String_Format1(status, ", ping %i ms", &ping);
+		if (ping) String_Format1(&status, ", ping %i ms", &ping);
 	}
+	TextWidget_Set(&s->line1, &status, &s->font);
 }
 
 static void HUDScreen_DrawPosition(struct HUDScreen* s) {
@@ -157,18 +163,13 @@ static void HUDScreen_UpdateHackState(struct HUDScreen* s) {
 
 static void HUDScreen_Update(void* screen, double delta) {
 	struct HUDScreen* s = (struct HUDScreen*)screen;
-	cc_string status; char statusBuffer[STRING_SIZE * 2];
-
 	s->frames++;
 	s->accumulator += delta;
 	if (s->accumulator < 1.0) return;
 
-	String_InitArray(status, statusBuffer);
-	HUDScreen_MakeText(s, &status);
-
-	TextWidget_Set(&s->line1, &status, &s->font);
+	HUDScreen_UpdateLine1(s);
 	s->accumulator = 0.0;
-	s->frames = 0;
+	s->frames      = 0;
 	Game.ChunkUpdates = 0;
 }
 
@@ -330,7 +331,7 @@ typedef int (*TabListEntryCompare)(int x, int y);
 static struct TabListOverlay {
 	Screen_Body
 	int x, y, width, height;
-	cc_bool active, classic;
+	cc_bool active, classic, staysOpen;
 	int namesCount, elementOffset;
 	struct TextWidget title;
 	struct FontDesc font;
@@ -632,7 +633,7 @@ static int TabListOverlay_PointerDown(void* screen, int id, int x, int y) {
 
 static void TabListOverlay_KeyUp(void* screen, int key) {
 	struct TabListOverlay* s = (struct TabListOverlay*)screen;
-	if (key != KeyBinds[KEYBIND_TABLIST] || Input_TouchMode) return;
+	if (key != KeyBinds[KEYBIND_TABLIST] || s->staysOpen) return;
 	Gui_Remove((struct Screen*)s);
 }
 
@@ -651,7 +652,7 @@ static void TabListOverlay_ContextRecreated(void* screen) {
 	struct TabListOverlay* s = (struct TabListOverlay*)screen;
 	int size, id;
 
-	size = Drawer2D_BitmappedText ? 16 : 11;
+	size = Drawer2D.BitmappedText ? 16 : 11;
 	Drawer2D_MakeFont(&s->font, size, FONT_FLAGS_PADDING);
 	s->namesCount = 0;
 
@@ -726,7 +727,8 @@ static const struct ScreenVTABLE TabListOverlay_VTABLE = {
 };
 void TabListOverlay_Show(void) {
 	struct TabListOverlay* s  = &TabListOverlay_Instance;
-	s->VTABLE = &TabListOverlay_VTABLE;
+	s->VTABLE    = &TabListOverlay_VTABLE;
+	s->staysOpen = false;
 	Gui_Add((struct Screen*)s, GUI_PRIORITY_TABLIST);
 }
 
@@ -747,7 +749,7 @@ static struct ChatScreen {
 	struct TextGroupWidget status, bottomRight, chat, clientStatus;
 	struct SpecialInputWidget altText;
 #ifdef CC_BUILD_TOUCH
-	struct ButtonWidget send, cancel;
+	struct ButtonWidget send, cancel, more;
 #endif
 
 	struct Texture statusTextures[CHAT_MAX_STATUS];
@@ -1002,6 +1004,7 @@ static void ChatScreen_DrawChat(struct ChatScreen* s, double delta) {
 
 #ifdef CC_BUILD_TOUCH
 		if (!Input_TouchMode) return;
+		Elem_Render(&s->more,   delta);
 		Elem_Render(&s->send,   delta);
 		Elem_Render(&s->cancel, delta);
 #endif
@@ -1022,6 +1025,7 @@ static void ChatScreen_ContextLost(void* screen) {
 
 #ifdef CC_BUILD_TOUCH
 	if (!Input_TouchMode) return;
+	Elem_Free(&s->more);
 	Elem_Free(&s->send);
 	Elem_Free(&s->cancel);
 #endif
@@ -1036,6 +1040,7 @@ static void ChatScreen_ContextRecreated(void* screen) {
 #ifdef CC_BUILD_TOUCH
 	if (!Input_TouchMode) return;
 	Gui_MakeTitleFont(&font);
+	ButtonWidget_SetConst(&s->more,   "More",   &font);
 	ButtonWidget_SetConst(&s->send,   "Send",   &font);
 	ButtonWidget_SetConst(&s->cancel, "Cancel", &font);
 	Font_Free(&font);
@@ -1070,11 +1075,13 @@ static void ChatScreen_Layout(void* screen) {
 #ifdef CC_BUILD_TOUCH
 	if (!Input_TouchMode) return;
 	if (WindowInfo.SoftKeyboard == SOFT_KEYBOARD_SHIFT) {
-		Widget_SetLocation(&s->send,   ANCHOR_MAX, ANCHOR_MAX, 10, 60);
-		Widget_SetLocation(&s->cancel, ANCHOR_MAX, ANCHOR_MAX, 10, 10);
+		Widget_SetLocation(&s->send,   ANCHOR_MAX, ANCHOR_MAX, 10,  60);
+		Widget_SetLocation(&s->cancel, ANCHOR_MAX, ANCHOR_MAX, 10,  10);
+		Widget_SetLocation(&s->more,   ANCHOR_MAX, ANCHOR_MAX, 10, 110);
 	} else {
-		Widget_SetLocation(&s->send,   ANCHOR_MAX, ANCHOR_MIN, 10, 10);
-		Widget_SetLocation(&s->cancel, ANCHOR_MAX, ANCHOR_MIN, 10, 60);
+		Widget_SetLocation(&s->send,   ANCHOR_MAX, ANCHOR_MIN, 10,  10);
+		Widget_SetLocation(&s->cancel, ANCHOR_MAX, ANCHOR_MIN, 10,  60);
+		Widget_SetLocation(&s->more,   ANCHOR_MAX, ANCHOR_MIN, 10, 110);
 	}
 #endif
 }
@@ -1148,6 +1155,11 @@ static int ChatScreen_KeyDown(void* screen, int key) {
 	return true;
 }
 
+static void ChatScreen_ToggleAltInput(struct ChatScreen* s) {
+	SpecialInputWidget_SetActive(&s->altText, !s->altText.active);
+	ChatScreen_UpdateChatYOffsets(s);
+}
+
 static void ChatScreen_KeyUp(void* screen, int key) {
 	struct ChatScreen* s = (struct ChatScreen*)screen;
 	if (!s->grabsInput || (struct Screen*)s != Gui.InputGrab) return;
@@ -1159,8 +1171,7 @@ static void ChatScreen_KeyUp(void* screen, int key) {
 
 	if (Server.SupportsFullCP437 && key == KeyBinds[KEYBIND_EXT_INPUT]) {
 		if (!WindowInfo.Focused) return;
-		SpecialInputWidget_SetActive(&s->altText, !s->altText.active);
-		ChatScreen_UpdateChatYOffsets(s);
+		ChatScreen_ToggleAltInput(s);
 	}
 }
 
@@ -1198,6 +1209,9 @@ static int ChatScreen_PointerDown(void* screen, int id, int x, int y) {
 	}
 	if (Widget_Contains(&s->cancel, x, y)) {
 		ChatScreen_EnterChatInput(s, true); return TOUCH_TYPE_GUI;
+	}
+	if (Widget_Contains(&s->more, x, y)) {
+		ChatScreen_ToggleAltInput(s); return TOUCH_TYPE_GUI;
 	}
 #endif
 
@@ -1257,6 +1271,7 @@ static void ChatScreen_Init(void* screen) {
 	if (!Input_TouchMode) return;
 	ButtonWidget_Init(&s->send,   100, NULL);
 	ButtonWidget_Init(&s->cancel, 100, NULL);
+	ButtonWidget_Init(&s->more,   100, NULL);
 #endif
 }
 
@@ -1448,7 +1463,7 @@ static int InventoryScreen_PointerDown(void* screen, int id, int x, int y) {
 	handled = Elem_HandlesPointerDown(table, id, x, y);
 
 	if (!handled || table->pendingClose) {
-		hotbar = Key_IsControlPressed() || Key_IsShiftPressed();
+		hotbar = Key_IsCtrlPressed() || Key_IsShiftPressed();
 		if (!hotbar) Gui_Remove((struct Screen*)s);
 	}
 	return TOUCH_TYPE_GUI;
@@ -1467,7 +1482,7 @@ static int InventoryScreen_PointerMove(void* screen, int id, int x, int y) {
 static int InventoryScreen_MouseScroll(void* screen, float delta) {
 	struct InventoryScreen* s = (struct InventoryScreen*)screen;
 
-	cc_bool hotbar = Key_IsAltPressed() || Key_IsControlPressed() || Key_IsShiftPressed();
+	cc_bool hotbar = Key_IsAltPressed() || Key_IsCtrlPressed() || Key_IsShiftPressed();
 	if (hotbar) return false;
 	return Elem_HandlesMouseScroll(&s->table, delta);
 }
@@ -1942,13 +1957,6 @@ static struct Widget* touch_widgets[ONSCREEN_MAX_BTNS + TOUCH_EXTRA_BTNS + 2] = 
 };
 #define TOUCH_MAX_VERTICES (THUMBSTICKWIDGET_MAX + TOUCH_MAX_BTNS * BUTTONWIDGET_MAX)
 
-static void TouchScreen_OnscreenClick(void* screen, void* widget) {
-	struct TouchScreen* s = (struct TouchScreen*)screen;
-	int i   = Screen_Index(screen, widget);
-	int key = KeyBinds[s->onscreenDescs[i]->bind];
-	Input_Set(key, !Input_Pressed[key]);
-}
-
 static void TouchScreen_ChatClick(void* s,     void* w) { ChatScreen_OpenInput(&String_Empty); }
 static void TouchScreen_RespawnClick(void* s,  void* w) { LocalPlayer_HandleRespawn(); }
 static void TouchScreen_SetSpawnClick(void* s, void* w) { LocalPlayer_HandleSetSpawn(); }
@@ -1957,12 +1965,16 @@ static void TouchScreen_NoclipClick(void* s,   void* w) { LocalPlayer_HandleNocl
 static void TouchScreen_CameraClick(void* s,   void* w) { Camera_CycleActive(); }
 static void TouchScreen_MoreClick(void* s,     void* w) { TouchMoreScreen_Show(); }
 static void TouchScreen_SwitchClick(void* s,   void* w) { Inventory_SwitchHotbar(); }
+static void TouchScreen_DeleteClick(void* s,   void* w) { InputHandler_DeleteBlock(); } /* TODO: also Send CPEClick packet */
+static void TouchScreen_PlaceClick(void* s,    void* w) { InputHandler_PlaceBlock(); }
+static void TouchScreen_PickClick(void* s,     void* w) { InputHandler_PickBlock(); }
 
 static void TouchScreen_TabClick(void* s, void* w) {
 	if (TabListOverlay_Instance.active) {
 		Gui_Remove((struct Screen*)&TabListOverlay_Instance);
 	} else {
 		TabListOverlay_Show();
+		TabListOverlay_Instance.staysOpen = true;
 	}
 }
 
@@ -1991,9 +2003,9 @@ static const struct TouchButtonDesc onscreenDescs[ONSCREEN_MAX_BTNS] = {
 	{ "Speed",     0,0,0, TouchScreen_SpeedClick,    &LocalPlayer_Instance.Hacks.CanSpeed   },
 	{ "\xabSpeed", 0,0,0, TouchScreen_HalfClick,     &LocalPlayer_Instance.Hacks.CanSpeed   },
 	{ "Camera",    0,0,0, TouchScreen_CameraClick,   &LocalPlayer_Instance.Hacks.CanUseThirdPerson },
-	{ "Delete",    KEYBIND_DELETE_BLOCK, 0,0, TouchScreen_OnscreenClick },
-	{ "Pick",      KEYBIND_PICK_BLOCK,   0,0, TouchScreen_OnscreenClick },
-	{ "Place",     KEYBIND_PLACE_BLOCK,  0,0, TouchScreen_OnscreenClick },
+	{ "Delete",    0,0,0, TouchScreen_DeleteClick },
+	{ "Pick",      0,0,0, TouchScreen_PickClick },
+	{ "Place",     0,0,0, TouchScreen_PlaceClick },
 	{ "Hotbar",    0,0,0, TouchScreen_SwitchClick }
 };
 static const struct TouchButtonDesc normDescs[1] = {

@@ -23,6 +23,7 @@
 #include "Inventory.h"
 #include "Platform.h"
 #include "Input.h"
+#include "Errors.h"
 
 static char nameBuffer[STRING_SIZE];
 static char motdBuffer[STRING_SIZE];
@@ -48,22 +49,6 @@ void Server_RetrieveTexturePack(const cc_string* url) {
 		TexturePack_Extract(url);
 	} else {
 		TexPackOverlay_Show(url);
-	}
-}
-
-static void Server_CheckAsyncResources(void) {
-	struct HttpRequest item;
-	if (!Http_GetResult(TexturePack_ReqID, &item)) return;
-
-	if (item.success) {
-		TexturePack_Apply(&item);
-		Mem_Free(item.data);
-	} else if (item.result) {
-		Logger_Warn(item.result, "trying to download texture pack", Http_DescribeError);
-	} else {
-		int status = item.statusCode;
-		if (status == 200 || status == 304) return;
-		Chat_Add1("&c%i error when trying to download texture pack", &status);
 	}
 }
 
@@ -199,7 +184,7 @@ static void SPConnection_Tick(struct ScheduledTask* task) {
 	if (Server.Disconnected) return;
 	if ((ticks % 3) == 0) { /* 60 -> 20 ticks a second */
 		Physics_Tick();
-		Server_CheckAsyncResources();
+		TexturePack_CheckPending();
 	}
 	ticks++;
 }
@@ -251,22 +236,26 @@ static void MPConnection_FinishConnect(void) {
 	lastPacket = Game.Time;
 }
 
+static void MPConnection_Fail(const cc_string* reason) {
+	cc_string msg; char msgBuffer[STRING_SIZE * 2];
+	String_InitArray(msg, msgBuffer);
+	net_connecting = false;
+
+	String_Format2(&msg, "Failed to connect to %s:%i", &Server.IP, &Server.Port);
+	Game_Disconnect(&msg, reason);
+	OnClose();
+}
+
 static void MPConnection_FailConnect(cc_result result) {
 	static const cc_string reason = String_FromConst("You failed to connect to the server. It's probably down!");
 	cc_string msg; char msgBuffer[STRING_SIZE * 2];
-
-	net_connecting = false;
 	String_InitArray(msg, msgBuffer);
 
 	if (result) {
 		String_Format3(&msg, "Error connecting to %s:%i: %i" _NL, &Server.IP, &Server.Port, &result);
 		Logger_Log(&msg);
-		msg.length = 0;
 	}
-
-	String_Format2(&msg, "Failed to connect to %s:%i", &Server.IP, &Server.Port);
-	Game_Disconnect(&msg, &reason);
-	OnClose();
+	MPConnection_Fail(&reason);
 }
 
 static void MPConnection_TickConnect(void) {
@@ -296,7 +285,7 @@ static void MPConnection_BeginConnect(void) {
 	String_InitArray(title, titleBuffer);
 
 	/* Default block permissions (in case server supports SetBlockPermissions but doesn't send) */
-	Blocks.CanPlace[BLOCK_AIR] = false;         Blocks.CanDelete[BLOCK_AIR] = false;
+	Blocks.CanPlace[BLOCK_AIR] = false;
 	Blocks.CanPlace[BLOCK_LAVA] = false;        Blocks.CanDelete[BLOCK_LAVA] = false;
 	Blocks.CanPlace[BLOCK_WATER] = false;       Blocks.CanDelete[BLOCK_WATER] = false;
 	Blocks.CanPlace[BLOCK_STILL_LAVA] = false;  Blocks.CanDelete[BLOCK_STILL_LAVA] = false;
@@ -307,12 +296,14 @@ static void MPConnection_BeginConnect(void) {
 	if (res) { MPConnection_FailConnect(res); return; }
 	Server.Disconnected = false;
 
-	Socket_SetBlocking(net_socket, false);
 	net_connecting     = true;
 	net_connectTimeout = Game.Time + NET_TIMEOUT_SECS;
-
 	res = Socket_Connect(net_socket, &Server.IP, Server.Port);
-	if (res && res != ReturnCode_SocketInProgess && res != ReturnCode_SocketWouldBlock) {
+
+	if (res == ERR_INVALID_ARGUMENT) {
+		static const cc_string reason = String_FromConst("Invalid IP address");
+		MPConnection_Fail(&reason);
+	} else if (res && res != ReturnCode_SocketInProgess && res != ReturnCode_SocketWouldBlock) {
 		MPConnection_FailConnect(res);
 	} else {
 		String_Format2(&title, "Connecting to %s:%i..", &Server.IP, &Server.Port);
@@ -351,7 +342,7 @@ static void MPConnection_CheckDisconnection(void) {
 	static const cc_string title  = String_FromConst("Disconnected!");
 	static const cc_string reason = String_FromConst("You've lost connection to the server");
 	cc_result availRes, selectRes;
-	cc_uint32 pending = 0;
+	int pending = 0;
 	cc_bool poll_read;
 
 	availRes  = Socket_Available(net_socket, &pending);
@@ -391,7 +382,7 @@ static void MPConnection_Tick(struct ScheduledTask* task) {
 
 	pending = 0;
 	res     = Socket_Available(net_socket, &pending);
-	readEnd = net_readCurrent;
+	readEnd = net_readCurrent; /* todo change to int remaining instead */
 
 	if (!res && pending) {
 		/* NOTE: Always using a read call that is a multiple of 4096 (appears to?) improve read performance */	
@@ -446,7 +437,7 @@ static void MPConnection_Tick(struct ScheduledTask* task) {
 
 	/* Network is ticked 60 times a second. We only send position updates 20 times a second */
 	if ((ticks % 3) == 0) {
-		Server_CheckAsyncResources();
+		TexturePack_CheckPending();
 		Protocol_Tick();
 		/* Have any packets been written? */
 		if (Server.WriteBuffer != net_writeBuffer) Net_SendPacket();

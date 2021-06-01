@@ -22,6 +22,7 @@ import android.graphics.PixelFormat;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.StrictMode;
+import android.provider.Settings.Secure;
 import android.text.Editable;
 import android.text.InputType;
 import android.text.Selection;
@@ -45,16 +46,25 @@ import android.view.inputmethod.InputConnection;
 import android.view.inputmethod.InputMethod;
 import android.view.inputmethod.InputMethodManager;
 
+// This class contains all the glue/interop code for bridging ClassiCube to the java Android world.
+// Some functionality is only available on later Android versions - try {} catch {} is used in such places 
+//   to ensure that the game can still run on earlier Android versions (albeit with reduced functionality)
+// Currently the minimum required API level to run the game is level 9 (Android 2.3). 
+// When using Android functionality, always aim to add a comment with the API level that the functionality 
+//   was added in, as this will make things easier if the minimum required API level is ever changed again
+
 // implements InputQueue.Callback
-public class MainActivity extends Activity implements SurfaceHolder.Callback2 {
-	LauncherView curView;
+public class MainActivity extends Activity {
 	
 	// ======================================
 	// -------------- COMMANDS --------------
 	// ======================================
-	class NativeCmdArgs { public int cmd, arg1, arg2, arg3; public String str; public Surface sur; }
-	Queue<NativeCmdArgs> nativeCmds = new ConcurrentLinkedQueue<NativeCmdArgs>();
-	Queue<NativeCmdArgs> freeCmds   = new ConcurrentLinkedQueue<NativeCmdArgs>();
+	//  The main thread (which receives events) is separate from the game thread (which processes events)
+	//  Therefore pushing/pulling events must be thread-safe, which is achieved through ConcurrentLinkedQueue
+	//  Additionally, a cache is used (freeCmds) to avoid constantly allocating NativeCmdArgs instances
+	class NativeCmdArgs { public int cmd, arg1, arg2, arg3, arg4; public String str; public Surface sur; }
+	Queue<NativeCmdArgs> pending  = new ConcurrentLinkedQueue<NativeCmdArgs>();
+	Queue<NativeCmdArgs> freeCmds = new ConcurrentLinkedQueue<NativeCmdArgs>();
 	
 	NativeCmdArgs getCmdArgs() {
 		NativeCmdArgs args = freeCmds.poll();
@@ -64,63 +74,64 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback2 {
 	void pushCmd(int cmd) {
 		NativeCmdArgs args = getCmdArgs();
 		args.cmd = cmd;
-		nativeCmds.add(args);
+		pending.add(args);
 	}
 	
 	void pushCmd(int cmd, int a1) {
 		NativeCmdArgs args = getCmdArgs();
 		args.cmd  = cmd;
 		args.arg1 = a1;
-		nativeCmds.add(args);
+		pending.add(args);
 	}
 	
-	void pushCmd(int cmd, int a1, int a2, int a3) {
+	void pushCmd(int cmd, int a1, int a2, int a3, int a4) {
 		NativeCmdArgs args = getCmdArgs();
 		args.cmd = cmd;
 		args.arg1 = a1;
 		args.arg2 = a2;
 		args.arg3 = a3;
-		nativeCmds.add(args);
+		args.arg4 = a4;
+		pending.add(args);
 	}
 
 	void pushCmd(int cmd, String text) {
 		NativeCmdArgs args = getCmdArgs();
 		args.cmd = cmd;
 		args.str = text;
-		nativeCmds.add(args);
+		pending.add(args);
 	}
 	
 	void pushCmd(int cmd, Surface surface) {
 		NativeCmdArgs args = getCmdArgs();
 		args.cmd = cmd;
 		args.sur = surface;
-		nativeCmds.add(args);
+		pending.add(args);
 	}
 	
 	final static int CMD_KEY_DOWN = 0;
+	
+	final static int CMD_POINTER_DOWN = 3;
+	final static int CMD_POINTER_UP   = 4;
 	final static int CMD_KEY_UP   = 1;
 	final static int CMD_KEY_CHAR = 2;
 	final static int CMD_KEY_TEXT = 19;
-	
-	final static int CMD_MOUSE_DOWN = 3;
-	final static int CMD_MOUSE_UP   = 4;
-	final static int CMD_MOUSE_MOVE = 5;
+	final static int CMD_POINTER_MOVE = 5;
 	
 	final static int CMD_WIN_CREATED   = 6;
 	final static int CMD_WIN_DESTROYED = 7;
 	final static int CMD_WIN_RESIZED   = 8;
-	final static int CMD_WIN_REDRAW	= 9;
+	final static int CMD_WIN_REDRAW    = 9;
 
 	final static int CMD_APP_START   = 10;
-	final static int CMD_APP_STOP	= 11;
+	final static int CMD_APP_STOP    = 11;
 	final static int CMD_APP_RESUME  = 12;
 	final static int CMD_APP_PAUSE   = 13;
 	final static int CMD_APP_DESTROY = 14;
 
-	final static int CMD_GOT_FOCUS	  = 15;
-	final static int CMD_LOST_FOCUS	 = 16;
+	final static int CMD_GOT_FOCUS   = 15;
+	final static int CMD_LOST_FOCUS  = 16;
 	final static int CMD_CONFIG_CHANGED = 17;
-	final static int CMD_LOW_MEMORY	 = 18;
+	final static int CMD_LOW_MEMORY  = 18;
 	
 	// ======================================
 	// --------------- EVENTS ---------------
@@ -130,12 +141,35 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback2 {
 
 	void startGameAsync() {
 		Log.i("CC_WIN", "handing off to native..");
-		System.loadLibrary("classicube");
+		try {
+			System.loadLibrary("classicube");
+		} catch (UnsatisfiedLinkError ex) {
+			ex.printStackTrace();
+			showAlertAsync("Failed to start", ex.getMessage());
+			return;
+		}
+		
+		gameRunning = true;
 		runGameAsync();
+	}
+	
+	void HACK_avoidFileUriExposedErrors() {
+		// StrictMode - API level 9
+		// disableDeathOnFileUriExposure - API level 24 ?????
+		try {
+			Method m = StrictMode.class.getMethod("disableDeathOnFileUriExposure");
+			m.invoke(null);
+		}  catch (NoClassDefFoundError ex) {
+			ex.printStackTrace();
+		} catch (Exception ex) {
+			ex.printStackTrace();
+		}
 	}
 	
 	@Override
 	protected void onCreate(Bundle savedInstanceState) {
+		// requestWindowFeature - API level 1
+		// setSoftInputMode, SOFT_INPUT_STATE_UNSPECIFIED, SOFT_INPUT_ADJUST_RESIZE - API level 3
 		input = (InputMethodManager)getSystemService(Context.INPUT_METHOD_SERVICE);
 		Log.i("CC_WIN", "CREATE EVENT");
 		Window window = getWindow();
@@ -148,16 +182,10 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback2 {
 		requestWindowFeature(Window.FEATURE_NO_TITLE);
 		// TODO: semaphore for destroyed and surfaceDestroyed
 
-		// avoid FileUriExposed exceptions when taking screenshots
-		try {
-			Method m = StrictMode.class.getMethod("disableDeathOnFileUriExposure");
-			m.invoke(null);
-		} catch (Exception ex) {
-			ex.printStackTrace();
-		}
+		// avoid FileUriExposed exception when taking screenshots on recent Android versions
+		HACK_avoidFileUriExposedErrors();
 
 		if (!gameRunning) startGameAsync();
-		gameRunning = true;
 		super.onCreate(savedInstanceState);
 	}
 
@@ -181,28 +209,31 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback2 {
 	}*/
 	
 	void pushTouch(int cmd, MotionEvent event, int i) {
+		// getPointerId, getX, getY - API level 5
 		int id = event.getPointerId(i);
 		// TODO: Pass float to jni
 		int x  = (int)event.getX(i);
 		int y  = (int)event.getY(i);
-		pushCmd(cmd, id, x, y);
+		pushCmd(cmd, id, x, y, 0);
 	}
 	
 	boolean handleTouchEvent(MotionEvent event) {
+		// getPointerCount - API level 5
+		// getActionMasked, getActionIndex - API level 8
 		switch (event.getActionMasked()) {
 		case MotionEvent.ACTION_DOWN:
 		case MotionEvent.ACTION_POINTER_DOWN:
-			pushTouch(CMD_MOUSE_DOWN, event, event.getActionIndex());
+			pushTouch(CMD_POINTER_DOWN, event, event.getActionIndex());
 			break;
 			
 		case MotionEvent.ACTION_UP:
 		case MotionEvent.ACTION_POINTER_UP:
-			pushTouch(CMD_MOUSE_UP, event, event.getActionIndex());
+			pushTouch(CMD_POINTER_UP, event, event.getActionIndex());
 			break;
 			
 		case MotionEvent.ACTION_MOVE:
 			for (int i = 0; i < event.getPointerCount(); i++) {
-				pushTouch(CMD_MOUSE_MOVE, event, i);
+				pushTouch(CMD_POINTER_MOVE, event, i);
 			}
 		}
 		return true;
@@ -237,7 +268,9 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback2 {
 	@Override
 	protected void onStop() { 
 		super.onStop();
-		pushCmd(CMD_APP_STOP); 
+		pushCmd(CMD_APP_STOP);
+		// In case game thread is blocked on showing dialog
+		releaseDialogSem();
 	}
 	
 	@Override
@@ -249,7 +282,8 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback2 {
 	
 	@Override
 	protected void onPause() {
-		// can't use null.. TODO is there a better way?
+		// setContentView - API level 1
+		// Can't use null.. TODO is there a better way?
 		setContentView(new View(this));
 		super.onPause();
 		pushCmd(CMD_APP_PAUSE); 
@@ -275,10 +309,10 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback2 {
 		super.onDestroy();
 	}
 	
-	// this is called on the game thread
+	// Called by the game thread to actually process events
 	public void processEvents() {
 		for (;;) {
-			NativeCmdArgs c = nativeCmds.poll();
+			NativeCmdArgs c = pending.poll();
 			if (c == null) return;
 			
 			switch (c.cmd) {
@@ -287,17 +321,17 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback2 {
 			case CMD_KEY_CHAR: processKeyChar(c.arg1); break;
 			case CMD_KEY_TEXT: processKeyText(c.str);  break;
 	
-			case CMD_MOUSE_DOWN: processMouseDown(c.arg1, c.arg2, c.arg3); break;
-			case CMD_MOUSE_UP:   processMouseUp(c.arg1,   c.arg2, c.arg3); break;
-			case CMD_MOUSE_MOVE: processMouseMove(c.arg1, c.arg2, c.arg3); break;
+			case CMD_POINTER_DOWN: processPointerDown(c.arg1, c.arg2, c.arg3, c.arg4); break;
+			case CMD_POINTER_UP:   processPointerUp(  c.arg1, c.arg2, c.arg3, c.arg4); break;
+			case CMD_POINTER_MOVE: processPointerMove(c.arg1, c.arg2, c.arg3, c.arg4); break;
 	
 			case CMD_WIN_CREATED:   processSurfaceCreated(c.sur);   break;
-			case CMD_WIN_DESTROYED: processSurfaceDestroyed();	  break;
+			case CMD_WIN_DESTROYED: processSurfaceDestroyed();      break;
 			case CMD_WIN_RESIZED:   processSurfaceResized(c.sur);   break;
-			case CMD_WIN_REDRAW:	processSurfaceRedrawNeeded();   break;
+			case CMD_WIN_REDRAW:    processSurfaceRedrawNeeded();   break;
 
 			case CMD_APP_START:   processOnStart();   break;
-			case CMD_APP_STOP:	processOnStop();	break;
+			case CMD_APP_STOP:    processOnStop();    break;
 			case CMD_APP_RESUME:  processOnResume();  break;
 			case CMD_APP_PAUSE:   processOnPause();   break;
 			case CMD_APP_DESTROY: processOnDestroy(); break;
@@ -319,9 +353,9 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback2 {
 	native void processKeyChar(int code);
 	native void processKeyText(String str);
 	
-	native void processMouseDown(int id, int x, int y);
-	native void processMouseUp(int id, int x, int y);
-	native void processMouseMove(int id, int x, int y);
+	native void processPointerDown(int id, int x, int y, int isMouse);
+	native void processPointerUp(  int id, int x, int y, int isMouse);
+	native void processPointerMove(int id, int x, int y, int isMouse);
 
 	native void processSurfaceCreated(Surface sur);
 	native void processSurfaceDestroyed();
@@ -345,60 +379,86 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback2 {
 	// --------------- VIEWS ----------------
 	// ======================================
 	volatile boolean fullscreen;
-
-	public void surfaceCreated(SurfaceHolder holder) {
-		Log.i("CC_WIN", "win created " + holder.getSurface());
-		pushCmd(CMD_WIN_CREATED, holder.getSurface());
-	}
-	
-	public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
-		Log.i("CC_WIN", "win changed " + holder.getSurface());
-		pushCmd(CMD_WIN_RESIZED, holder.getSurface());
-	}
-	
 	final Semaphore winDestroyedSem = new Semaphore(0, true);
-	public void surfaceDestroyed(SurfaceHolder holder) {
-		Log.i("CC_WIN", "win destroyed " + holder.getSurface());
-		Log.i("CC_WIN", "cur view " + curView);
-		holder.removeCallback(this);
+	SurfaceHolder.Callback callback;
+	CCView curView;
+	
+	// SurfaceHolder.Callback - API level 1
+	class CCSurfaceCallback implements SurfaceHolder.Callback {
+		public void surfaceCreated(SurfaceHolder holder) {
+			// getSurface - API level 1
+			Log.i("CC_WIN", "win created " + holder.getSurface());
+			MainActivity.this.pushCmd(CMD_WIN_CREATED, holder.getSurface());
+		}
 		
-		//08-02 21:03:02.967: E/BufferQueueProducer(1350): [SurfaceView - com.classicube.ClassiCube/com.classicube.MainActivity#0] disconnect: not connected (req=2)
-		//08-02 21:03:02.968: E/SurfaceFlinger(1350): Failed to find layer (SurfaceView - com.classicube.ClassiCube/com.classicube.MainActivity#0) in layer parent (no-parent).
-
-		pushCmd(CMD_WIN_DESTROYED);
-		// per the android docs for SurfaceHolder.Callback
-		// "If you have a rendering thread that directly accesses the surface, you must ensure
-		// that thread is no longer touching the Surface before returning from this function."
-		try {
-			winDestroyedSem.acquire();
-		} catch (InterruptedException e) { }
+		public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
+			// getSurface - API level 1
+			Log.i("CC_WIN", "win changed " + holder.getSurface());
+			MainActivity.this.pushCmd(CMD_WIN_RESIZED, holder.getSurface());
+		}
+		
+		public void surfaceDestroyed(SurfaceHolder holder) {
+			// getSurface, removeCallback - API level 1
+			Log.i("CC_WIN", "win destroyed " + holder.getSurface());
+			Log.i("CC_WIN", "cur view " + curView);
+			holder.removeCallback(this);
+			
+			//08-02 21:03:02.967: E/BufferQueueProducer(1350): [SurfaceView - com.classicube.ClassiCube/com.classicube.MainActivity#0] disconnect: not connected (req=2)
+			//08-02 21:03:02.968: E/SurfaceFlinger(1350): Failed to find layer (SurfaceView - com.classicube.ClassiCube/com.classicube.MainActivity#0) in layer parent (no-parent).
+	
+			MainActivity.this.pushCmd(CMD_WIN_DESTROYED);
+			// In case game thread is blocked showing a dialog on main thread
+			releaseDialogSem();
+			
+			// per the android docs for SurfaceHolder.Callback
+			// "If you have a rendering thread that directly accesses the surface, you must ensure
+			// that thread is no longer touching the Surface before returning from this function."
+			try {
+				winDestroyedSem.acquire();
+			} catch (InterruptedException e) { }
+		}
 	}
 	
-	// Game calls this on its thread to notify the main thread
+	// SurfaceHolder.Callback2 - API level 9
+	class CCSurfaceCallback2 extends CCSurfaceCallback implements SurfaceHolder.Callback2 {
+		public void surfaceRedrawNeeded(SurfaceHolder holder) {
+			// getSurface - API level 1
+			Log.i("CC_WIN", "win dirty " + holder.getSurface());
+			MainActivity.this.pushCmd(CMD_WIN_REDRAW);
+		}
+	}
+	
+	// Called by the game thread to notify the main thread
 	// that it is safe to destroy the window surface now
-	public void processedSurfaceDestroyed() {
-		winDestroyedSem.release();
-	}
+	public void processedSurfaceDestroyed() { winDestroyedSem.release(); }
 	
-	public void surfaceRedrawNeeded(SurfaceHolder holder) {
-		Log.i("CC_WIN", "win dirty " + holder.getSurface());
-		pushCmd(CMD_WIN_REDRAW);
+	void createSurfaceCallback() {
+		if (callback != null) return;
+		try {
+			callback = new CCSurfaceCallback2(); 
+		} catch (NoClassDefFoundError ex) {
+			ex.printStackTrace();
+			callback = new CCSurfaceCallback();
+		}
 	}
-	
+	 
 	void attachSurface() {
-		curView = new LauncherView(this);
-		curView.getHolder().addCallback(this);
+		// setContentView, requestFocus, getHolder, addCallback, RGBX_8888 - API level 1
+		createSurfaceCallback();
+		curView = new CCView(this);
+		curView.getHolder().addCallback(callback);
 		curView.getHolder().setFormat(PixelFormat.RGBX_8888);
 		
 		setContentView(curView);
 		curView.requestFocus();
-		if (fullscreen) goFullscreen();
+		if (fullscreen) setUIVisibility(FULLSCREEN_FLAGS);
 	}
 
-	class LauncherView extends SurfaceView {
+	class CCView extends SurfaceView {
 		SpannableStringBuilder kbText;
 
-		public LauncherView(Context context) {
+		public CCView(Context context) {
+			// setFocusable, setFocusableInTouchMode - API level 1
 			super(context);
 			setFocusable(true);
 			setFocusableInTouchMode(true);
@@ -411,6 +471,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback2 {
 
 		@Override
 		public InputConnection onCreateInputConnection(EditorInfo attrs) {
+			// BaseInputConnection, IME_ACTION_GO, IME_FLAG_NO_EXTRACT_UI - API level 3
 			attrs.actionLabel = null;
 			attrs.inputType   = MainActivity.this.getKeyboardType();
 			attrs.imeOptions  = EditorInfo.IME_ACTION_GO | EditorInfo.IME_FLAG_NO_EXTRACT_UI;
@@ -441,6 +502,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback2 {
 
 				@Override
 				public boolean deleteSurroundingText(int beforeLength, int afterLength) {
+					
 					boolean success = super.deleteSurroundingText(beforeLength, afterLength);
 					updateText();
 					return success;
@@ -455,6 +517,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback2 {
 
 				@Override
 				public boolean sendKeyEvent(KeyEvent ev) {
+					// getSelectionStart - API level 1
 					if (ev.getAction() != KeyEvent.ACTION_DOWN) return super.sendKeyEvent(ev);
 					int code  = ev.getKeyCode();
 					int uni   = ev.getUnicodeChar();
@@ -488,6 +551,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback2 {
 	// ======================================
 	// -------------- PLATFORM --------------
 	// ======================================
+	//  Implements java Android side of the Android Platform backend (See Platform.c)
 	public void setupForGame() {
 		// Once a surface has been locked for drawing with canvas, can't ever be detached
 		// This means trying to attach an OpenGL ES context to the surface will fail
@@ -500,6 +564,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback2 {
 	}
 	
 	public void startOpen(String url) {
+		// ACTION_VIEW, resolveActivity, getPackageManager, startActivity - API level 1
 		Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
 		if (intent.resolveActivity(getPackageManager()) != null) {
 			startActivity(intent);
@@ -507,16 +572,25 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback2 {
 	}
 	
 	public String getExternalAppDir() {
+		// getExternalFilesDir - API level 8
 		return getExternalFilesDir(null).getAbsolutePath();
+	}
+	
+	public String getUUID() {
+		// getContentResolver - API level 1
+		// getString, ANDROID_ID - API level 3
+		return Secure.getString(getContentResolver(), Secure.ANDROID_ID);
 	}
 	
 	public long getApkUpdateTime() {
 		try {
-			//String name = getPackageName();
-			//ApplicationInfo info = getPackageManager().getApplicationInfo(name, 0);
+			// getApplicationInfo - API level 4
 			ApplicationInfo info = getApplicationInfo();
 			File apkFile = new File(info.sourceDir);
-			return apkFile.lastModified();
+			
+			// https://developer.android.com/reference/java/io/File#lastModified()
+			//  lastModified is returned in milliseconds
+			return apkFile.lastModified() / 1000;
 		} catch (Exception ex) {
 			return 0;
 		}
@@ -525,11 +599,14 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback2 {
 	// ======================================
 	// --------------- WINDOW ---------------
 	// ======================================
-	public void setWindowTitle(String str) { setTitle(str); }
-
+	//  Implements java Android side of the Android Window backend (See Window.c)
 	volatile int keyboardType;
 	volatile String keyboardText = "";
+	// setTitle - API level 1
+	public void setWindowTitle(String str) { setTitle(str); }
+
 	public void openKeyboard(String text, int type) {
+		// restartInput, showSoftInput - API level 3
 		keyboardType = type;
 		keyboardText = text;
 		//runOnUiThread(new Runnable() {
@@ -542,6 +619,8 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback2 {
 	}
 
 	public void closeKeyboard() {
+		// InputMethodManager, hideSoftInputFromWindow - API level 3
+		// getWindow, getDecorView, getWindowToken - API level 1
 		InputMethodManager input = (InputMethodManager)getSystemService(Context.INPUT_METHOD_SERVICE);
 		View view = getWindow().getDecorView();
 		input.hideSoftInputFromWindow(view.getWindowToken(), 0);
@@ -573,23 +652,27 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback2 {
 	}
 
 	public int getKeyboardType() {
+		// TYPE_CLASS_TEXT, TYPE_CLASS_NUMBER, TYPE_TEXT_VARIATION_PASSWORD - API level 3
 		if (keyboardType == 2) return InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD;
 		if (keyboardType == 1) return InputType.TYPE_CLASS_NUMBER;
 		return InputType.TYPE_CLASS_TEXT;
 	}
 
 	public String getClipboardText() {
+		// ClipboardManager, getText() - API level 11
 		ClipboardManager clipboard = (ClipboardManager)getSystemService(Context.CLIPBOARD_SERVICE);
 		CharSequence chars = clipboard.getText();
 		return chars == null ? null : chars.toString();
 	}
 
 	public void setClipboardText(String str) {
+		// ClipboardManager, setText() - API level 11
 		ClipboardManager clipboard = (ClipboardManager)getSystemService(Context.CLIPBOARD_SERVICE);
 		clipboard.setText(str);
 	}
 	
 	DisplayMetrics getMetrics() {
+		// getDefaultDisplay, getMetrics - API level 1
 		DisplayMetrics dm = new DisplayMetrics();
 		getWindowManager().getDefaultDisplay().getMetrics(dm);
 		return dm;
@@ -601,57 +684,72 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback2 {
 	public float getDpiY() { return getMetrics().density; }
 
 	final Semaphore dialogSem = new Semaphore(0, true);
+	
+	void releaseDialogSem() {
+		// Only release when no free permits (otherwise showAlert doesn't block when called)
+		if (dialogSem.availablePermits() > 0) return;
+		dialogSem.release();
+	}
 
-	public void showAlert(final String title, final String message) {
+	void showAlertAsync(final String title, final String message) {
 		//final Activity activity = this;
+		// setTitle, setMessage, setPositiveButton, setCancelable, create, show - API level 1
 		runOnUiThread(new Runnable() {
 			public void run() {
-				AlertDialog.Builder dlg = new AlertDialog.Builder(MainActivity.this, AlertDialog.THEME_HOLO_DARK);
+				AlertDialog.Builder dlg = new AlertDialog.Builder(MainActivity.this);
 				dlg.setTitle(title);
 				dlg.setMessage(message);
+				
 				dlg.setPositiveButton("Close", new DialogInterface.OnClickListener() {
-					public void onClick(DialogInterface dialog, int id) {
-						dialogSem.release();
-					}
+					public void onClick(DialogInterface dialog, int id) { releaseDialogSem(); }
 				});
 				dlg.setCancelable(false);
 				dlg.create().show();
 			}
 		});
-
-		// wait for dialog to be closed
-		// TODO: this fails because multiple dialog boxes show
 	}
 
-	public int getWindowState() {
-		return fullscreen ? 1 : 0;
+	
+	public void showAlert(final String title, final String message) {
+		showAlertAsync(title, message);
+		try {
+			dialogSem.acquire(); // Block game thread
+		} catch (InterruptedException e) { }
 	}
 
-	void goFullscreen() {
-		curView.setSystemUiVisibility(View.SYSTEM_UI_FLAG_FULLSCREEN | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
+	public int getWindowState() { return fullscreen ? 1 : 0; }
+	// SYSTEM_UI_FLAG_HIDE_NAVIGATION - API level 14
+	// SYSTEM_UI_FLAG_FULLSCREEN - API level 16
+	// SYSTEM_UI_FLAG_IMMERSIVE_STICKY - API level 19
+	final static int FULLSCREEN_FLAGS = View.SYSTEM_UI_FLAG_FULLSCREEN | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY;
+	
+	void setUIVisibility(int flags) {
+		if (curView == null) return;
+		// setSystemUiVisibility - API level 11
+		try {
+			curView.setSystemUiVisibility(flags);
+		} catch (NoSuchMethodError ex) {
+			ex.printStackTrace();
+		}
 	}
 
 	public void enterFullscreen() {
 		fullscreen = true;
 		runOnUiThread(new Runnable() {
-			public void run() {
-				if (curView != null) goFullscreen();
-			}
+			public void run() { setUIVisibility(FULLSCREEN_FLAGS); }
 		});
     }
 
     public void exitFullscreen() {
 		fullscreen = false;
 		runOnUiThread(new Runnable() {
-			public void run() {
-				if (curView != null) curView.setSystemUiVisibility(View.SYSTEM_UI_FLAG_VISIBLE);
-			}
+			public void run() { setUIVisibility(View.SYSTEM_UI_FLAG_VISIBLE); }
 		});
     }
 	
 	public String shareScreenshot(String path) {
 		try {
-			File file = new File(getExternalAppDir() + "/screenshots/" + path);			
+			File file = new File(getExternalAppDir() + "/screenshots/" + path);
 			Intent intent = new Intent();
 			
 			intent.setAction(Intent.ACTION_SEND);
@@ -668,6 +766,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback2 {
 	// ======================================
 	// ---------------- HTTP ----------------
 	// ======================================
+	//  Implements java Android side of the Android HTTP backend (See Http.c)
 	HttpURLConnection conn;
 	InputStream src;
 	byte[] readCache = new byte[8192];
@@ -703,16 +802,19 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback2 {
 		int len;
 		try {
 			conn.connect();
-			Map<String, List<String>> all = conn.getHeaderFields();
-
-			for (Map.Entry<String, List<String>> h : all.entrySet()) {
-				String key = h.getKey();
-				for (String value : h.getValue()) {
-					if (key == null) {
-						httpParseHeader(value);
-					} else {
-						httpParseHeader(key + ":" + value);
-					}
+			// Some implementations also provide this as getHeaderField(0), but some don't
+			httpParseHeader("HTTP/1.1 " + conn.getResponseCode() + " MSG");
+			
+			// Legitimate webservers aren't going to reply with over 200 headers
+			for (int i = 0; i < 200; i++) {
+				String key = conn.getHeaderFieldKey(i);
+				String val = conn.getHeaderField(i);
+				if (key == null && val == null) break;
+				
+				if (key == null) {
+					httpParseHeader(val);
+				} else {
+					httpParseHeader(key + ":" + val);
 				}
 			}
 

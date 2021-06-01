@@ -72,6 +72,7 @@
 #define OPT_TOUCH_BUTTONS "gui-touchbuttons"
 #define OPT_TOUCH_SCALE "gui-touchscale"
 #define OPT_HTTP_ONLY "http-no-https"
+#define OPT_RAW_INPUT "win-raw-input"
 
 #define LOPT_SESSION  "launcher-session"
 #define LOPT_USERNAME "launcher-cc-username"
@@ -83,8 +84,11 @@
 #define ROPT_PORT   "launcher-port"
 #define ROPT_MPPASS "launcher-mppass"
 
+#define SOPT_SERVICES "server-services"
+
 struct StringsBuffer;
 extern struct StringsBuffer Options;
+extern cc_result Options_LoadResult;
 /* Frees any memory allocated in storing options. */
 void Options_Free(void);
 
@@ -120,9 +124,9 @@ CC_API void Options_Set(const char*     keyRaw,  const cc_string* value);
 CC_API void Options_SetString(const cc_string* key, const cc_string* value);
 
 /* Attempts to securely encode an option. */
-/* NOTE: Not all platforms support secure saving. DO NOT RELY ON THIS BEING SECURE! */
-void Options_SetSecure(const char* opt, const cc_string* data, const cc_string* key);
+/* NOTE: Not all platforms support secure saving. */
+void Options_SetSecure(const char* opt, const cc_string* data);
 /* Attempts to securely decode an option. */
-/* NOTE: Not all platforms support secure saving. DO NOT RELY ON THIS BEING SECURE! */
-void Options_GetSecure(const char* opt, cc_string* data, const cc_string* key);
+/* NOTE: Not all platforms support secure saving. */
+void Options_GetSecure(const char* opt, cc_string* data);
 #endif

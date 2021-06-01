@@ -15,6 +15,7 @@
 #include "Options.h"
 #include "Menus.h"
 #include "Funcs.h"
+#include "Server.h"
 
 struct _GuiData Gui;
 struct Screen* Gui_Screens[GUI_MAX_SCREENS];
@@ -385,17 +386,6 @@ int Widget_Contains(void* widget, int x, int y) {
 /*########################################################################################################################*
 *-------------------------------------------------------Screen base-------------------------------------------------------*
 *#########################################################################################################################*/
-void Screen_RenderWidgets(void* screen, double delta) {
-	struct Screen* s = (struct Screen*)screen;
-	struct Widget** widgets = s->widgets;
-	int i;
-
-	for (i = 0; i < s->numWidgets; i++) {
-		if (!widgets[i]) continue;
-		Elem_Render(widgets[i], delta);
-	}
-}
-
 void Screen_Render2Widgets(void* screen, double delta) {
 	struct Screen* s = (struct Screen*)screen;
 	struct Widget** widgets = s->widgets;
@@ -559,7 +549,11 @@ static void OnInit(void) {
 
 #ifdef CC_BUILD_TOUCH
 	Event_Register_(&InputEvents.TextChanged,    NULL, OnTextChanged);
-	Gui._onscreenButtons = Options_GetInt(OPT_TOUCH_BUTTONS, 0, Int32_MaxValue, 0);
+
+	#define DEFAULT_SP_ONSCREEN (ONSCREEN_BTN_FLY | ONSCREEN_BTN_SPEED)
+	#define DEFAULT_MP_ONSCREEN (ONSCREEN_BTN_FLY | ONSCREEN_BTN_SPEED | ONSCREEN_BTN_CHAT)
+	Gui._onscreenButtons = Options_GetInt(OPT_TOUCH_BUTTONS, 0, Int32_MaxValue,
+											Server.IsSinglePlayer ? DEFAULT_SP_ONSCREEN : DEFAULT_MP_ONSCREEN);
 #endif
 
 	LoadOptions();

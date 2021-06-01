@@ -323,7 +323,7 @@ static DWORD d3d9_formatMappings[2] = { D3DFVF_XYZ | D3DFVF_DIFFUSE, D3DFVF_XYZ 
 
 static IDirect3D9* d3d;
 static IDirect3DDevice9* device;
-static DWORD createFlags = D3DCREATE_HARDWARE_VERTEXPROCESSING;
+static DWORD createFlags;
 static D3DFORMAT viewFormat, depthFormat;
 static int cachedWidth, cachedHeight;
 static int depthBits;
@@ -430,6 +430,7 @@ static void TryCreateDevice(void) {
 	D3D9_FillPresentArgs(&args);
 
 	/* Try to create a device with as much hardware usage as possible. */
+	createFlags = D3DCREATE_HARDWARE_VERTEXPROCESSING;
 	res = IDirect3D9_CreateDevice(d3d, D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, winHandle, createFlags, &args, &device);
 	/* Another running fullscreen application might prevent creating device */
 	if (res == D3DERR_DEVICELOST) { Gfx.LostContext = true; return; }
@@ -443,6 +444,9 @@ static void TryCreateDevice(void) {
 		createFlags = D3DCREATE_SOFTWARE_VERTEXPROCESSING;
 		res = IDirect3D9_CreateDevice(d3d, D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, winHandle, createFlags, &args, &device);
 	}
+
+	/* Not enough memory? Try again later in a bit */
+	if (res == D3DERR_OUTOFVIDEOMEMORY) { Gfx.LostContext = true; return; }
 
 	if (res) Logger_Abort2(res, "Creating Direct3D9 device");
 	res = IDirect3DDevice9_GetDeviceCaps(device, &caps);
@@ -942,7 +946,7 @@ void Gfx_SetDynamicVbData(GfxResourceID vb, void* vertices, int vCount) {
 *#########################################################################################################################*/
 static D3DTRANSFORMSTATETYPE matrix_modes[2] = { D3DTS_PROJECTION, D3DTS_VIEW };
 
-void Gfx_LoadMatrix(MatrixType type, struct Matrix* matrix) {
+void Gfx_LoadMatrix(MatrixType type, const struct Matrix* matrix) {
 	if (Gfx.LostContext) return;
 	IDirect3DDevice9_SetTransform(device, matrix_modes[type], (const D3DMATRIX*)matrix);
 }
@@ -973,13 +977,18 @@ void Gfx_CalcOrthoMatrix(float width, float height, struct Matrix* matrix) {
 	matrix->row4.Z = ORTHO_NEAR / (ORTHO_NEAR - ORTHO_FAR);
 }
 
-void Gfx_CalcPerspectiveMatrix(float fov, float aspect, float zFar, struct Matrix* matrix) {
+static float CalcZNear(float fov) {
 	/* With reversed z depth, near Z plane can be much closer (with sufficient depth buffer precision) */
 	/*   This reduces clipping with high FOV without sacrificing depth precision for faraway objects */
 	/*   However for low FOV, don't reduce near Z in order to gain a bit more depth precision */
-	float zNear = (depthBits < 24 || fov <= 70 * MATH_DEG2RAD) ? 0.05f : 0.001953125f;
-	Matrix_PerspectiveFieldOfView(matrix, fov, aspect, zNear, zFar);
+	if (depthBits < 24 || fov <= 70 * MATH_DEG2RAD) return 0.05f;
+	if (fov <= 100 * MATH_DEG2RAD) return 0.025f;
+	if (fov <= 150 * MATH_DEG2RAD) return 0.0125f;
+	return 0.00390625f;
+}
 
+void Gfx_CalcPerspectiveMatrix(float fov, float aspect, float zFar, struct Matrix* matrix) {
+	Matrix_PerspectiveFieldOfView(matrix, fov, aspect, CalcZNear(fov), zFar);
 	/* Adjust the projection matrix to produce reversed Z values */
 	matrix->row3.Z = -matrix->row3.Z - 1.0f;
 	matrix->row4.Z = -matrix->row4.Z;
@@ -1686,23 +1695,19 @@ static void GenFragmentShader(const struct GLShader* shader, cc_string* dst) {
 	String_AppendConst(dst,         "}");
 }
 
-/* Tries to compile GLSL shader code. */
-static GLint CompileShader(GLenum type, const cc_string* src, GLuint* obj) {
-	GLint temp, shader;
-	int len;
+/* Tries to compile GLSL shader code */
+static GLint CompileShader(GLint shader, const cc_string* src) {
+	const char* str = src->buffer;
+	int len = src->length;
+	GLint temp;
 
-	shader = glCreateShader(type);
-	*obj   = shader;
-	if (!shader) return false;
-	len = src->length;
-
-	glShaderSource(shader, 1, &src->buffer, &len);
+	glShaderSource(shader, 1, &str, &len);
 	glCompileShader(shader);
 	glGetShaderiv(shader, _GL_COMPILE_STATUS, &temp);
 	return temp;
 }
 
-/* Logs information then aborts program. */
+/* Logs information then aborts program */
 static void ShaderFailed(GLint shader) {
 	char logInfo[2048];
 	GLint temp;
@@ -1719,27 +1724,32 @@ static void ShaderFailed(GLint shader) {
 	Logger_Abort("Failed to compile shader");
 }
 
-/* Tries to compile vertex and fragment shaders, then link into an OpenGL program. */
+/* Tries to compile vertex and fragment shaders, then link into an OpenGL program */
 static void CompileProgram(struct GLShader* shader) {
 	char tmpBuffer[2048]; cc_string tmp;
 	GLuint vs, fs, program;
 	GLint temp;
 
+	vs = glCreateShader(_GL_VERTEX_SHADER);
+	if (!vs) { Platform_LogConst("Failed to create vertex shader"); return; }
+	
 	String_InitArray(tmp, tmpBuffer);
 	GenVertexShader(shader, &tmp);
-	if (!CompileShader(_GL_VERTEX_SHADER,   &tmp, &vs)) ShaderFailed(vs);
+	if (!CompileShader(vs, &tmp)) ShaderFailed(vs);
+
+	fs = glCreateShader(_GL_FRAGMENT_SHADER);
+	if (!fs) { Platform_LogConst("Failed to create fragment shader"); glDeleteShader(vs); return; }
 
 	tmp.length = 0;
 	GenFragmentShader(shader, &tmp);
-	if (!CompileShader(_GL_FRAGMENT_SHADER, &tmp, &fs)) {
+	if (!CompileShader(fs, &tmp)) {
 		/* Sometimes fails 'highp precision is not supported in fragment shader' */
 		/* So try compiling shader again without highp precision */
-		glDeleteShader(fs);
 		shader->features |= FTR_FS_MEDIUMP;
 
 		tmp.length = 0;
 		GenFragmentShader(shader, &tmp);
-		if (!CompileShader(_GL_FRAGMENT_SHADER, &tmp, &fs)) ShaderFailed(fs);
+		if (!CompileShader(fs, &tmp)) ShaderFailed(fs);
 	}
 
 
@@ -1878,7 +1888,7 @@ void Gfx_SetFogMode(FogFunc func) {
 void Gfx_SetTexturing(cc_bool enabled) { }
 void Gfx_SetAlphaTest(cc_bool enabled) { gfx_alphaTest = enabled; SwitchProgram(); }
 
-void Gfx_LoadMatrix(MatrixType type, struct Matrix* matrix) {
+void Gfx_LoadMatrix(MatrixType type, const struct Matrix* matrix) {
 	if (type == MATRIX_VIEW)       _view = *matrix;
 	if (type == MATRIX_PROJECTION) _proj = *matrix;
 
@@ -2052,9 +2062,9 @@ void Gfx_SetAlphaTest(cc_bool enabled) { gl_Toggle(GL_ALPHA_TEST); }
 static GLenum matrix_modes[3] = { GL_PROJECTION, GL_MODELVIEW, GL_TEXTURE };
 static int lastMatrix;
 
-void Gfx_LoadMatrix(MatrixType type, struct Matrix* matrix) {
+void Gfx_LoadMatrix(MatrixType type, const struct Matrix* matrix) {
 	if (type != lastMatrix) { lastMatrix = type; glMatrixMode(matrix_modes[type]); }
-	glLoadMatrixf((float*)matrix);
+	glLoadMatrixf((const float*)matrix);
 }
 
 void Gfx_LoadIdentityMatrix(MatrixType type) {
@@ -2187,18 +2197,18 @@ void Gfx_DrawIndexedTris_T2fC4b(int verticesCount, int startVertex) {
 
 static void GL_CheckSupport(void) {
 	static const struct DynamicLibSym coreVboFuncs[5] = {
-		{ "glBindBuffer",    (void**)&_glBindBuffer }, { "glDeleteBuffers", (void**)&_glDeleteBuffers },
-		{ "glGenBuffers",    (void**)&_glGenBuffers }, { "glBufferData",    (void**)&_glBufferData },
-		{ "glBufferSubData", (void**)&_glBufferSubData }
+		DynamicLib_Sym2("glBindBuffer",    glBindBuffer), DynamicLib_Sym2("glDeleteBuffers", glDeleteBuffers),
+		DynamicLib_Sym2("glGenBuffers",    glGenBuffers), DynamicLib_Sym2("glBufferData",    glBufferData),
+		DynamicLib_Sym2("glBufferSubData", glBufferSubData)
 	};
 	static const struct DynamicLibSym arbVboFuncs[5] = {
-		{ "glBindBufferARB",    (void**)&_glBindBuffer }, { "glDeleteBuffersARB", (void**)&_glDeleteBuffers },
-		{ "glGenBuffersARB",    (void**)&_glGenBuffers }, { "glBufferDataARB",    (void**)&_glBufferData },
-		{ "glBufferSubDataARB", (void**)&_glBufferSubData }
+		DynamicLib_Sym2("glBindBufferARB",    glBindBuffer), DynamicLib_Sym2("glDeleteBuffersARB", glDeleteBuffers),
+		DynamicLib_Sym2("glGenBuffersARB",    glGenBuffers), DynamicLib_Sym2("glBufferDataARB",    glBufferData),
+		DynamicLib_Sym2("glBufferSubDataARB", glBufferSubData)
 	};
 	static const cc_string vboExt = String_FromConst("GL_ARB_vertex_buffer_object");
-	cc_string extensions  = String_FromReadonly((const char*)glGetString(GL_EXTENSIONS));
-	const GLubyte* ver = glGetString(GL_VERSION);
+	cc_string extensions = String_FromReadonly((const char*)glGetString(GL_EXTENSIONS));
+	const GLubyte* ver   = glGetString(GL_VERSION);
 
 	/* Version string is always: x.y. (and whatever afterwards) */
 	int major = ver[0] - '0', minor = ver[2] - '0';

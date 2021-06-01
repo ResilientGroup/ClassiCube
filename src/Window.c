@@ -15,33 +15,30 @@ struct _WinData WindowInfo;
 
 int Display_ScaleX(int x) { return (int)(x * DisplayInfo.ScaleX); }
 int Display_ScaleY(int y) { return (int)(y * DisplayInfo.ScaleY); }
-#define Display_CentreX(width)  (DisplayInfo.X + (DisplayInfo.Width  - width)  / 2)
-#define Display_CentreY(height) (DisplayInfo.Y + (DisplayInfo.Height - height) / 2)
 
-#ifndef CC_BUILD_WEB
-void Clipboard_RequestText(RequestClipboardCallback callback, void* obj) {
-	cc_string text; char textBuffer[2048];
-	String_InitArray(text, textBuffer);
-
-	Clipboard_GetText(&text);
-	callback(&text, obj);
-}
-#endif
-
-#ifdef CC_BUILD_IOS
-/* iOS implements some functions in external interop_ios.m file */
-#define CC_MAYBE_OBJC extern
+#if defined CC_BUILD_IOS
+/* iOS implements these functions in external interop_ios.m file */
+#define CC_MAYBE_OBJC1 extern
+#define CC_MAYBE_OBJC2 extern
+#define CC_OBJC_VISIBLE
+#elif defined CC_BUILD_COCOA
+/* Cocoa implements some functions in external interop_cocoa.m file */
+#define CC_MAYBE_OBJC1 extern
+#define CC_MAYBE_OBJC2 static
+#define CC_OBJC_VISIBLE
 #else
 /* All other platforms implement internally in this file */
-#define CC_MAYBE_OBJC static
+#define CC_MAYBE_OBJC1 static
+#define CC_MAYBE_OBJC2 static
+#define CC_OBJC_VISIBLE static
 #endif
 
 
 static int cursorPrevX, cursorPrevY;
 static cc_bool cursorVisible = true;
 /* Gets the position of the cursor in screen or window coordinates. */
-CC_MAYBE_OBJC void Cursor_GetRawPos(int* x, int* y);
-CC_MAYBE_OBJC void Cursor_DoSetVisible(cc_bool visible);
+CC_MAYBE_OBJC1 void Cursor_GetRawPos(int* x, int* y);
+CC_MAYBE_OBJC2 void Cursor_DoSetVisible(cc_bool visible);
 
 void Cursor_SetVisible(cc_bool visible) {
 	if (cursorVisible == visible) return;
@@ -80,7 +77,7 @@ static void DefaultDisableRawMouse(void) {
 }
 
 /* The actual windowing system specific method to display a message box */
-CC_MAYBE_OBJC void ShowDialogCore(const char* title, const char* msg);
+CC_MAYBE_OBJC1 void ShowDialogCore(const char* title, const char* msg);
 void Window_ShowDialog(const char* title, const char* msg) {
 	/* Ensure cursor is visible while showing message box */
 	cc_bool visible = cursorVisible;
@@ -706,9 +703,9 @@ static ATOM DoRegisterClass(void) {
 	wc.lpfnWndProc   = Window_Procedure;
 	wc.lpszClassName = CC_WIN_CLASSNAME;
 
-	wc.hIcon   = (HICON)LoadImage(win_instance, MAKEINTRESOURCE(1), IMAGE_ICON,
+	wc.hIcon   = (HICON)LoadImageA(win_instance, MAKEINTRESOURCEA(1), IMAGE_ICON,
 			GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON), 0);
-	wc.hIconSm = (HICON)LoadImage(win_instance, MAKEINTRESOURCE(1), IMAGE_ICON,
+	wc.hIconSm = (HICON)LoadImageA(win_instance, MAKEINTRESOURCEA(1), IMAGE_ICON,
 			GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), 0);
 	wc.hCursor = LoadCursorA(NULL, IDC_ARROW);
 
@@ -741,7 +738,7 @@ static void DoCreateWindow(ATOM atom, int width, int height) {
 
 void Window_Create(int width, int height) {
 	ATOM atom;
-	win_instance = GetModuleHandle(NULL);
+	win_instance = GetModuleHandleA(NULL);
 	/* TODO: UngroupFromTaskbar(); */
 	width  = Display_ScaleX(width);
 	height = Display_ScaleY(height);
@@ -759,7 +756,11 @@ void Window_Create(int width, int height) {
 void Window_SetTitle(const cc_string* title) {
 	WCHAR str[NATIVE_STR_LEN];
 	Platform_EncodeUtf16(str, title);
-	SetWindowTextW(win_handle, str);
+	if (SetWindowTextW(win_handle, str)) return;
+
+	/* Windows 9x does not support W API functions */
+	Platform_Utf16ToAnsi(str);
+	SetWindowTextA(win_handle, (const char*)str);
 }
 
 void Clipboard_GetText(cc_string* value) {
@@ -975,7 +976,9 @@ static void InitRawMouse(void) {
 		_getRawInputData  = (FUNC_GetRawInputData) DynamicLib_Get2(lib, "GetRawInputData");
 		rawMouseSupported = _registerRawInput && _getRawInputData;
 	}
-	if (!rawMouseSupported) { Platform_LogConst("Raw input unsupported!"); return; }
+
+	rawMouseSupported &= Options_GetBool(OPT_RAW_INPUT, true);
+	if (!rawMouseSupported) { Platform_LogConst("## Raw input unsupported!"); return; }
 
 	rid.usUsagePage = 1; /* HID_USAGE_PAGE_GENERIC; */
 	rid.usUsage     = 2; /* HID_USAGE_GENERIC_MOUSE; */
@@ -1042,8 +1045,11 @@ static Atom net_wm_state_fullscreen;
 
 static Atom xa_clipboard, xa_targets, xa_utf8_string, xa_data_sel;
 static Atom xa_atom = 4;
-static long win_eventMask;
 static cc_bool grabCursor;
+static long win_eventMask = StructureNotifyMask | /* SubstructureNotifyMask | */ 
+	ExposureMask      | KeyReleaseMask  | KeyPressMask    | KeymapStateMask   | 
+	PointerMotionMask | FocusChangeMask | ButtonPressMask | ButtonReleaseMask | 
+	EnterWindowMask   | LeaveWindowMask | PropertyChangeMask;
 
 static int MapNativeKey(KeySym key, unsigned int state) {
 	if (key >= XK_0 && key <= XK_9) { return '0' + (key - XK_0); }
@@ -1276,11 +1282,6 @@ void Window_Create(int width, int height) {
 	x = Display_CentreX(width);
 	y = Display_CentreY(height);
 	RegisterAtoms();
-
-	win_eventMask = StructureNotifyMask /*| SubstructureNotifyMask*/ | ExposureMask |
-		KeyReleaseMask  | KeyPressMask    | KeymapStateMask   | PointerMotionMask |
-		FocusChangeMask | ButtonPressMask | ButtonReleaseMask | EnterWindowMask |
-		LeaveWindowMask | PropertyChangeMask;
 	win_visual = GLContext_SelectVisual();
 
 	Platform_LogConst("Opening render window... ");
@@ -1493,6 +1494,8 @@ static void HandleGenericEvent(XEvent* e);
 
 void Window_ProcessEvents(void) {
 	XEvent e;
+	Window focus;
+	int focusRevert;
 	int i, btn, key, status;
 
 	while (WindowInfo.Exists) {
@@ -1521,6 +1524,20 @@ void Window_ProcessEvents(void) {
 
 		case Expose:
 			if (e.xexpose.count == 0) Event_RaiseVoid(&WindowEvents.Redraw);
+			break;
+
+		case LeaveNotify:
+			XGetInputFocus(win_display, &focus, &focusRevert);
+			if (focus == PointerRoot) {
+				WindowInfo.Focused = false; Event_RaiseVoid(&WindowEvents.FocusChanged);
+			}
+			break;
+
+		case EnterNotify:
+			XGetInputFocus(win_display, &focus, &focusRevert);
+			if (focus == PointerRoot) {
+				WindowInfo.Focused = true; Event_RaiseVoid(&WindowEvents.FocusChanged);
+			}
 			break;
 
 		case KeyPress:
@@ -2073,9 +2090,9 @@ void Window_DisableRawMouse(void) {
 *#########################################################################################################################*/
 #elif defined CC_BUILD_CARBON || defined CC_BUILD_COCOA
 #include <ApplicationServices/ApplicationServices.h>
-static int windowX, windowY;
+CC_OBJC_VISIBLE int windowX, windowY;
 
-static void Window_CommonInit(void) {
+CC_OBJC_VISIBLE void Window_CommonInit(void) {
 	CGDirectDisplayID display = CGMainDisplayID();
 	CGRect bounds = CGDisplayBounds(display);
 
@@ -2093,7 +2110,7 @@ static pascal OSErr HandleQuitMessage(const AppleEvent* ev, AppleEvent* reply, l
 	return 0;
 }
 
-static void Window_CommonCreate(void) {
+CC_OBJC_VISIBLE void Window_CommonCreate(void) {
 	WindowInfo.Exists = true;
 	/* for quit buttons in dock and menubar */
 	AEInstallEventHandler(kCoreEventClass, kAEQuitApplication,
@@ -2111,7 +2128,7 @@ static const cc_uint8 key_map[8 * 16] = {
 	KEY_F5, KEY_F6, KEY_F7, KEY_F3, KEY_F8, KEY_F9, 0, KEY_F11, 0, KEY_F13, 0, KEY_F14, 0, KEY_F10, 0, KEY_F12,
 	'U', KEY_F15, KEY_INSERT, KEY_HOME, KEY_PAGEUP, KEY_DELETE, KEY_F4, KEY_END, KEY_F2, KEY_PAGEDOWN, KEY_F1, KEY_LEFT, KEY_RIGHT, KEY_DOWN, KEY_UP, 0,
 };
-static int MapNativeKey(UInt32 key) { return key < Array_Elems(key_map) ? key_map[key] : 0; }
+CC_OBJC_VISIBLE int MapNativeKey(UInt32 key) { return key < Array_Elems(key_map) ? key_map[key] : 0; }
 /* TODO: Check these.. */
 /*   case 0x37: return KEY_LWIN; */
 /*   case 0x38: return KEY_LSHIFT; */
@@ -2516,6 +2533,11 @@ extern CGContextRef CGWindowContextCreate(CGSConnectionID conn, CGSWindowID win,
 static CGSConnectionID conn;
 static CGSWindowID winId;
 
+#ifndef kCGBitmapByteOrder32Host
+/* Undefined in < 10.4 SDK. No issue since < 10.4 is only Big Endian PowerPC anyways */
+#define kCGBitmapByteOrder32Host 0
+#endif
+
 #ifdef CC_BUILD_ICON
 extern const int CCIcon_Data[];
 extern const int CCIcon_Width, CCIcon_Height;
@@ -2529,7 +2551,7 @@ static void ApplyIcon(void) {
 	provider = CGDataProviderCreateWithData(NULL, CCIcon_Data,
 					Bitmap_DataSize(CCIcon_Width, CCIcon_Height), NULL);
 	image    = CGImageCreate(CCIcon_Width, CCIcon_Height, 8, 32, CCIcon_Width * 4, colSpace,
-					kCGBitmapByteOrder32Little | kCGImageAlphaLast, provider, NULL, 0, 0);
+					kCGBitmapByteOrder32Host | kCGImageAlphaLast, provider, NULL, 0, 0);
 
 	SetApplicationDockTileImage(image);
 	CGImageRelease(image);
@@ -2694,13 +2716,8 @@ void Window_DrawFramebuffer(Rect2D r) {
 
 	provider = CGDataProviderCreateWithData(NULL, fb_bmp.scan0,
 		Bitmap_DataSize(fb_bmp.width, fb_bmp.height), NULL);
-#ifdef CC_BIG_ENDIAN
 	image    = CGImageCreate(fb_bmp.width, fb_bmp.height, 8, 32, fb_bmp.width * 4, colorSpace,
-				kCGImageAlphaNoneSkipFirst, provider, NULL, 0, 0);
-#else
-	image    = CGImageCreate(fb_bmp.width, fb_bmp.height, 8, 32, fb_bmp.width * 4, colorSpace,
-				kCGBitmapByteOrder32Little | kCGImageAlphaNoneSkipFirst, provider, NULL, 0, 0);
-#endif
+				kCGBitmapByteOrder32Host | kCGImageAlphaNoneSkipFirst, provider, NULL, 0, 0);
 
 	CGContextDrawImage(context, rect, image);
 	CGContextSynchronize(context);
@@ -2721,483 +2738,7 @@ void Window_FreeFramebuffer(struct Bitmap* bmp) {
 *-------------------------------------------------------Cocoa window------------------------------------------------------*
 *#########################################################################################################################*/
 #elif defined CC_BUILD_COCOA
-#include <objc/message.h>
-#include <objc/runtime.h>
-static id appHandle, winHandle, viewHandle;
-extern void* NSDefaultRunLoopMode;
-
-static SEL selFrame, selDeltaX, selDeltaY;
-static SEL selNextEvent, selType, selSendEvent;
-static SEL selButton, selKeycode, selModifiers;
-static SEL selCharacters, selUtf8String, selMouseLoc;
-static SEL selCurrentContext, selGraphicsPort;
-static SEL selSetNeedsDisplay, selDisplayIfNeeded;
-static SEL selUpdate, selFlushBuffer;
-
-static void RegisterSelectors(void) {
-	selFrame  = sel_registerName("frame");
-	selDeltaX = sel_registerName("deltaX");
-	selDeltaY = sel_registerName("deltaY");
-
-	selNextEvent = sel_registerName("nextEventMatchingMask:untilDate:inMode:dequeue:");
-	selType      = sel_registerName("type");
-	selSendEvent = sel_registerName("sendEvent:");
-
-	selButton    = sel_registerName("buttonNumber");
-	selKeycode   = sel_registerName("keyCode");
-	selModifiers = sel_registerName("modifierFlags");
-
-	selCharacters = sel_registerName("characters");
-	selUtf8String = sel_registerName("UTF8String");
-	selMouseLoc   = sel_registerName("mouseLocation");
-
-	selCurrentContext  = sel_registerName("currentContext");
-	selGraphicsPort    = sel_registerName("graphicsPort");
-	selSetNeedsDisplay = sel_registerName("setNeedsDisplayInRect:");
-	selDisplayIfNeeded = sel_registerName("displayIfNeeded");
-
-	selUpdate      = sel_registerName("update");
-	selFlushBuffer = sel_registerName("flushBuffer");
-}
-
-static CC_INLINE CGFloat Send_CGFloat(id receiver, SEL sel) {
-	/* Sometimes we have to use fpret and sometimes we don't. See this for more details: */
-	/* http://www.sealiesoftware.com/blog/archive/2008/11/16/objc_explain_objc_msgSend_fpret.html */
-	/* return type is void*, but we cannot cast a void* to a float or double */
-
-#ifdef __i386__
-	return ((CGFloat(*)(id, SEL))(void *)objc_msgSend_fpret)(receiver, sel);
-#else
-	return ((CGFloat(*)(id, SEL))(void *)objc_msgSend)(receiver, sel);
-#endif
-}
-
-static CC_INLINE CGPoint Send_CGPoint(id receiver, SEL sel) {
-	/* on x86 and x86_64 CGPoint fits the requirements for 'struct returned in registers' */
-	return ((CGPoint(*)(id, SEL))(void *)objc_msgSend)(receiver, sel);
-}
-
-static void RefreshWindowBounds(void) {
-	CGRect win, view;
-	int viewY;
-
-	win  = ((CGRect(*)(id, SEL))(void *)objc_msgSend_stret)(winHandle,  selFrame);
-	view = ((CGRect(*)(id, SEL))(void *)objc_msgSend_stret)(viewHandle, selFrame);
-
-	/* For cocoa, the 0,0 origin is the bottom left corner of windows/views/screen. */
-	/* To get window's real Y screen position, first need to find Y of top. (win.y + win.height) */
-	/* Then just subtract from screen height to make relative to top instead of bottom of the screen. */
-	/* Of course this is only half the story, since we're really after Y position of the content. */
-	/* To work out top Y of view relative to window, it's just win.height - (view.y + view.height) */
-	viewY   = (int)win.size.height  - ((int)view.origin.y + (int)view.size.height);
-	windowX = (int)win.origin.x     + (int)view.origin.x;
-	windowY = DisplayInfo.Height - ((int)win.origin.y  + (int)win.size.height) + viewY;
-
-	WindowInfo.Width  = (int)view.size.width;
-	WindowInfo.Height = (int)view.size.height;
-}
-
-static void OnDidResize(id self, SEL cmd, id notification) {
-	RefreshWindowBounds();
-	Event_RaiseVoid(&WindowEvents.Resized);
-}
-
-static void OnDidMove(id self, SEL cmd, id notification) {
-	RefreshWindowBounds();
-	GLContext_Update();
-}
-
-static void OnDidBecomeKey(id self, SEL cmd, id notification) {
-	WindowInfo.Focused = true;
-	Event_RaiseVoid(&WindowEvents.FocusChanged);
-}
-
-static void OnDidResignKey(id self, SEL cmd, id notification) {
-	WindowInfo.Focused = false;
-	Event_RaiseVoid(&WindowEvents.FocusChanged);
-}
-
-static void OnDidMiniaturize(id self, SEL cmd, id notification) {
-	Event_RaiseVoid(&WindowEvents.StateChanged);
-}
-
-static void OnDidDeminiaturize(id self, SEL cmd, id notification) {
-	Event_RaiseVoid(&WindowEvents.StateChanged);
-}
-
-static void OnWillClose(id self, SEL cmd, id notification) {
-	WindowInfo.Exists = false;
-	Event_RaiseVoid(&WindowEvents.Closing);
-}
-
-/* If this isn't overriden, an annoying beep sound plays anytime a key is pressed */
-static void OnKeyDown(id self, SEL cmd, id ev) { }
-
-static Class Window_MakeClass(void) {
-	Class c = objc_allocateClassPair(objc_getClass("NSWindow"), "ClassiCube_Window", 0);
-
-	class_addMethod(c, sel_registerName("windowDidResize:"),        OnDidResize,        "v@:@");
-	class_addMethod(c, sel_registerName("windowDidMove:"),          OnDidMove,          "v@:@");
-	class_addMethod(c, sel_registerName("windowDidBecomeKey:"),     OnDidBecomeKey,     "v@:@");
-	class_addMethod(c, sel_registerName("windowDidResignKey:"),     OnDidResignKey,     "v@:@");
-	class_addMethod(c, sel_registerName("windowDidMiniaturize:"),   OnDidMiniaturize,   "v@:@");
-	class_addMethod(c, sel_registerName("windowDidDeminiaturize:"), OnDidDeminiaturize, "v@:@");
-	class_addMethod(c, sel_registerName("windowWillClose:"),        OnWillClose,        "v@:@");
-	class_addMethod(c, sel_registerName("keyDown:"),                OnKeyDown,          "v@:@");
-
-	objc_registerClassPair(c);
-	return c;
-}
-
-/* When the user users left mouse to drag reisze window, this enters 'live resize' mode */
-/*   Although the game receives a left mouse down event, it does NOT receive a left mouse up */
-/*   This causes the game to get stuck with left mouse down after user finishes resizing */
-/* So work arond that by always releasing left mouse when a live resize is finished */
-static void DidEndLiveResize(id self, SEL cmd) {
-	Input_SetReleased(KEY_LMOUSE);
-}
-
-static void View_DrawRect(id self, SEL cmd, CGRect r);
-static void MakeContentView(void) {
-	CGRect rect;
-	id view;
-	Class c;
-
-	view = objc_msgSend(winHandle, sel_registerName("contentView"));
-	rect = ((CGRect(*)(id, SEL))(void *)objc_msgSend_stret)(view, selFrame);
-	
-	c = objc_allocateClassPair(objc_getClass("NSView"), "ClassiCube_View", 0);
-	// TODO: test rect is actually correct in View_DrawRect on both 32 and 64 bit
-#ifdef __i386__
-	class_addMethod(c, sel_registerName("drawRect:"), View_DrawRect, "v@:{NSRect={NSPoint=ff}{NSSize=ff}}");
-#else
-	class_addMethod(c, sel_registerName("drawRect:"), View_DrawRect, "v@:{NSRect={NSPoint=dd}{NSSize=dd}}");
-#endif
-	class_addMethod(c, sel_registerName("viewDidEndLiveResize"), DidEndLiveResize, "v@:");
-	objc_registerClassPair(c);
-
-	viewHandle = objc_msgSend(c, sel_registerName("alloc"));
-	objc_msgSend(viewHandle, sel_registerName("initWithFrame:"),  rect);
-	objc_msgSend(winHandle,  sel_registerName("setContentView:"), viewHandle);
-}
-
-void Window_Init(void) {
-	appHandle = objc_msgSend((id)objc_getClass("NSApplication"), sel_registerName("sharedApplication"));
-	objc_msgSend(appHandle, sel_registerName("activateIgnoringOtherApps:"), true);
-	Window_CommonInit();
-	RegisterSelectors();
-}
-
-#ifdef CC_BUILD_ICON
-extern const int CCIcon_Data[];
-extern const int CCIcon_Width, CCIcon_Height;
-
-static void ApplyIcon(void) {
-	CGColorSpaceRef colSpace;
-	CGDataProviderRef provider;
-	CGImageRef image;
-	CGSize size;
-	void* img;
-
-	colSpace = CGColorSpaceCreateDeviceRGB();
-	provider = CGDataProviderCreateWithData(NULL, CCIcon_Data,
-					Bitmap_DataSize(CCIcon_Width, CCIcon_Height), NULL);
-	image    = CGImageCreate(CCIcon_Width, CCIcon_Height, 8, 32, CCIcon_Width * 4, colSpace,
-					kCGBitmapByteOrder32Little | kCGImageAlphaLast, provider, NULL, 0, 0);
-
-	size.width = 0; size.height = 0;
-	img = objc_msgSend((id)objc_getClass("NSImage"), sel_registerName("alloc"));
-	objc_msgSend(img, sel_registerName("initWithCGImage:size:"), image, size);
-	objc_msgSend(appHandle, sel_registerName("setApplicationIconImage:"), img);
-
-	/* TODO need to release NSImage here */
-	CGImageRelease(image);
-	CGDataProviderRelease(provider);
-	CGColorSpaceRelease(colSpace);
-}
-#else
-static void ApplyIcon(void) { }
-#endif
-
-#define NSTitledWindowMask         (1 << 0)
-#define NSClosableWindowMask       (1 << 1)
-#define NSMiniaturizableWindowMask (1 << 2)
-#define NSResizableWindowMask      (1 << 3)
-#define NSFullScreenWindowMask     (1 << 14)
-
-void Window_Create(int width, int height) {
-	Class winClass;
-	CGRect rect;
-
-	/* Technically the coordinates for the origin are at bottom left corner */
-	/* But since the window is in centre of the screen, don't need to care here */
-	rect.origin.x    = Display_CentreX(width);  
-	rect.origin.y    = Display_CentreY(height);
-	rect.size.width  = width; 
-	rect.size.height = height;
-
-	winClass  = Window_MakeClass();
-	winHandle = objc_msgSend(winClass, sel_registerName("alloc"));
-	objc_msgSend(winHandle, sel_registerName("initWithContentRect:styleMask:backing:defer:"), rect, (NSTitledWindowMask | NSClosableWindowMask | NSResizableWindowMask | NSMiniaturizableWindowMask), 0, false);
-	
-	Window_CommonCreate();
-	objc_msgSend(winHandle, sel_registerName("setDelegate:"), winHandle);
-	RefreshWindowBounds();
-	MakeContentView();
-	ApplyIcon();
-}
-
-void Window_SetTitle(const cc_string* title) {
-	UInt8 str[NATIVE_STR_LEN];
-	CFStringRef titleCF;
-	int len;
-
-	/* TODO: This leaks memory, old title isn't released */
-	len = Platform_EncodeUtf8(str, title);
-	titleCF = CFStringCreateWithBytes(kCFAllocatorDefault, str, len, kCFStringEncodingUTF8, false);
-	objc_msgSend(winHandle, sel_registerName("setTitle:"), titleCF);
-}
-
-void Window_Show(void) { 
-	objc_msgSend(winHandle, sel_registerName("makeKeyAndOrderFront:"), appHandle);
-	RefreshWindowBounds(); // TODO: even necessary?
-}
-
-int Window_GetWindowState(void) {
-	int flags;
-
-	flags = (int)objc_msgSend(winHandle, sel_registerName("styleMask"));
-	if (flags & NSFullScreenWindowMask) return WINDOW_STATE_FULLSCREEN;
-	     
-	flags = (int)objc_msgSend(winHandle, sel_registerName("isMiniaturized"));
-	return flags ? WINDOW_STATE_MINIMISED : WINDOW_STATE_NORMAL;
-}
-
-// TODO: Only works on 10.7+
-cc_result Window_EnterFullscreen(void) {
-	objc_msgSend(winHandle, sel_registerName("toggleFullScreen:"), appHandle);
-	return 0;
-}
-cc_result Window_ExitFullscreen(void) {
-	objc_msgSend(winHandle, sel_registerName("toggleFullScreen:"), appHandle);
-	return 0;
-}
-
-void Window_SetSize(int width, int height) {
-	/* Can't use setContentSize:, because that resizes from the bottom left corner. */
-	CGRect rect = ((CGRect(*)(id, SEL))(void *)objc_msgSend_stret)(winHandle, selFrame);
-
-	rect.origin.y    += WindowInfo.Height - height;
-	rect.size.width  += width  - WindowInfo.Width;
-	rect.size.height += height - WindowInfo.Height;
-	objc_msgSend(winHandle, sel_registerName("setFrame:display:"), rect, true);
-}
-
-void Window_Close(void) { 
-	objc_msgSend(winHandle, sel_registerName("close"));
-}
-
-static int MapNativeMouse(int button) {
-	if (button == 0) return KEY_LMOUSE;
-	if (button == 1) return KEY_RMOUSE;
-	if (button == 2) return KEY_MMOUSE;
-	return 0;
-}
-
-static void ProcessKeyChars(id ev) {
-	char buffer[128];
-	const char* src;
-	cc_string str;
-	id chars;
-	int i, len, flags;
-
-	/* Ignore text input while cmd is held down */
-	/* e.g. so Cmd + V to paste doesn't leave behind 'v' */
-	flags = (int)objc_msgSend(ev, selModifiers);
-	if (flags & 0x000008) return;
-	if (flags & 0x000010) return;
-
-	chars = objc_msgSend(ev,    selCharacters);
-	src   = objc_msgSend(chars, selUtf8String);
-	len   = String_Length(src);
-	String_InitArray(str, buffer);
-
-	String_AppendUtf8(&str, src, len);
-	for (i = 0; i < str.length; i++) {
-		Event_RaiseInt(&InputEvents.Press, str.buffer[i]);
-	}
-}
-
-static cc_bool GetMouseCoords(int* x, int* y) {
-	CGPoint loc = Send_CGPoint((id)objc_getClass("NSEvent"), selMouseLoc);
-	*x = (int)loc.x                        - windowX;	
-	*y = (DisplayInfo.Height - (int)loc.y) - windowY;
-	// TODO: this seems to be off by 1
-	return *x >= 0 && *y >= 0 && *x < WindowInfo.Width && *y < WindowInfo.Height;
-}
-
-static int TryGetKey(id ev) {
-	int code = (int)objc_msgSend(ev, selKeycode);
-	int key  = MapNativeKey(code);
-	if (key) return key;
-
-	Platform_Log1("Unknown key %i", &code);
-	return 0;
-}
-
-void Window_ProcessEvents(void) {
-	id ev;
-	int key, type, steps, x, y;
-	CGFloat dx, dy;
-
-	for (;;) {
-		ev = objc_msgSend(appHandle, selNextEvent, 0xFFFFFFFFU, NULL, NSDefaultRunLoopMode, true);
-		if (!ev) break;
-		type = (int)objc_msgSend(ev, selType);
-
-		switch (type) {
-		case  1: /* NSLeftMouseDown  */
-		case  3: /* NSRightMouseDown */
-		case 25: /* NSOtherMouseDown */
-			key = MapNativeMouse((int)objc_msgSend(ev, selButton));
-			if (GetMouseCoords(&x, &y) && key) Input_SetPressed(key);
-			break;
-
-		case  2: /* NSLeftMouseUp  */
-		case  4: /* NSRightMouseUp */
-		case 26: /* NSOtherMouseUp */
-			key = MapNativeMouse((int)objc_msgSend(ev, selButton));
-			if (key) Input_SetReleased(key);
-			break;
-
-		case 10: /* NSKeyDown */
-			key = TryGetKey(ev);
-			if (key) Input_SetPressed(key);
-			// TODO: Test works properly with other languages
-			ProcessKeyChars(ev);
-			break;
-
-		case 11: /* NSKeyUp */
-			key = TryGetKey(ev);
-			if (key) Input_SetReleased(key);
-			break;
-
-		case 12: /* NSFlagsChanged */
-			key = (int)objc_msgSend(ev, selModifiers);
-			/* TODO: Figure out how to only get modifiers that changed */
-			Input_Set(KEY_LCTRL,    key & 0x000001);
-			Input_Set(KEY_LSHIFT,   key & 0x000002);
-			Input_Set(KEY_RSHIFT,   key & 0x000004);
-			Input_Set(KEY_LWIN,     key & 0x000008);
-			Input_Set(KEY_RWIN,     key & 0x000010);
-			Input_Set(KEY_LALT,     key & 0x000020);
-			Input_Set(KEY_RALT,     key & 0x000040);
-			Input_Set(KEY_RCTRL,    key & 0x002000);
-			Input_Set(KEY_CAPSLOCK, key & 0x010000);
-			break;
-
-		case 22: /* NSScrollWheel */
-			dy    = Send_CGFloat(ev, selDeltaY);
-			/* https://bugs.eclipse.org/bugs/show_bug.cgi?id=220175 */
-			/* delta is in 'line height' units, but I don't know how to map that to actual units. */
-			/* All I know is that scrolling by '1 wheel notch' produces a delta of around 0.1, and that */
-			/* sometimes I'll see it go all the way up to 5-6 with a larger wheel scroll. */
-			/* So mulitplying by 10 doesn't really seem a good idea, instead I just round outwards. */
-			/* TODO: Figure out if there's a better way than this. */
-			steps = dy > 0.0f ? Math_Ceil(dy) : Math_Floor(dy);
-			Mouse_ScrollWheel(steps);
-			break;
-
-		case  5: /* NSMouseMoved */
-		case  6: /* NSLeftMouseDragged */
-		case  7: /* NSRightMouseDragged */
-		case 27: /* NSOtherMouseDragged */
-			if (GetMouseCoords(&x, &y)) Pointer_SetPosition(0, x, y);
-
-			if (Input_RawMode) {
-				dx = Send_CGFloat(ev, selDeltaX);
-				dy = Send_CGFloat(ev, selDeltaY);
-				Event_RaiseRawMove(&PointerEvents.RawMoved, dx, dy);
-			}
-			break;
-		}
-		objc_msgSend(appHandle, selSendEvent, ev);
-	}
-}
-
-static void Cursor_GetRawPos(int* x, int* y) { *x = 0; *y = 0; }
-static void ShowDialogCore(const char* title, const char* msg) {
-	CFStringRef titleCF, msgCF;
-	id alert;
-	
-	alert   = objc_msgSend((id)objc_getClass("NSAlert"), sel_registerName("alloc"));
-	alert   = objc_msgSend(alert, sel_registerName("init"));
-	titleCF = CFStringCreateWithCString(NULL, title, kCFStringEncodingASCII);
-	msgCF   = CFStringCreateWithCString(NULL, msg,   kCFStringEncodingASCII);
-	
-	objc_msgSend(alert, sel_registerName("setMessageText:"),     titleCF);
-	objc_msgSend(alert, sel_registerName("setInformativeText:"), msgCF);
-	objc_msgSend(alert, sel_registerName("addButtonWithTitle:"), CFSTR("OK"));
-	
-	objc_msgSend(alert, sel_registerName("runModal"));
-	CFRelease(titleCF);
-	CFRelease(msgCF);
-}
-
-static struct Bitmap fb_bmp;
-void Window_AllocFramebuffer(struct Bitmap* bmp) {
-	bmp->scan0 = (BitmapCol*)Mem_Alloc(bmp->width * bmp->height, 4, "window pixels");
-	fb_bmp = *bmp;
-}
-
-static void View_DrawRect(id self, SEL cmd, CGRect r_) {
-	CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
-	CGContextRef context = NULL;
-	CGDataProviderRef provider;
-	CGImageRef image;
-	CGRect rect;
-	id nsContext;
-
-	/* Unfortunately CGImageRef is immutable, so changing the */
-	/* underlying data doesn't change what shows when drawing. */
-	/* TODO: Find a better way of doing this in cocoa.. */
-	if (!fb_bmp.scan0) return;
-	nsContext = objc_msgSend((id)objc_getClass("NSGraphicsContext"), selCurrentContext);
-	context   = objc_msgSend(nsContext, selGraphicsPort);
-
-	/* TODO: Only update changed bit.. */
-	rect.origin.x = 0; rect.origin.y = 0;
-	rect.size.width  = WindowInfo.Width;
-	rect.size.height = WindowInfo.Height;
-
-	/* TODO: REPLACE THIS AWFUL HACK */
-	provider = CGDataProviderCreateWithData(NULL, fb_bmp.scan0,
-		Bitmap_DataSize(fb_bmp.width, fb_bmp.height), NULL);
-	image = CGImageCreate(fb_bmp.width, fb_bmp.height, 8, 32, fb_bmp.width * 4, colorSpace,
-		kCGBitmapByteOrder32Little | kCGImageAlphaNoneSkipFirst, provider, NULL, 0, 0);
-
-	CGContextDrawImage(context, rect, image);
-	CGContextSynchronize(context);
-
-	CGImageRelease(image);
-	CGDataProviderRelease(provider);
-	CGColorSpaceRelease(colorSpace);
-}
-
-void Window_DrawFramebuffer(Rect2D r) {
-	CGRect rect;
-	rect.origin.x    = r.X; 
-	rect.origin.y    = WindowInfo.Height - r.Y - r.Height;
-	rect.size.width  = r.Width;
-	rect.size.height = r.Height;
-
-	objc_msgSend(viewHandle, selSetNeedsDisplay, rect);
-	objc_msgSend(viewHandle, selDisplayIfNeeded);
-}
-
-void Window_FreeFramebuffer(struct Bitmap* bmp) {
-	Mem_Free(bmp->scan0);
-}
+/* NOTE: Mostly implemented in interop_cocoa.m */
 #endif
 
 
@@ -3208,17 +2749,20 @@ void Window_FreeFramebuffer(struct Bitmap* bmp) {
 #include <emscripten/emscripten.h>
 #include <emscripten/html5.h>
 #include <emscripten/key_codes.h>
-static cc_bool keyboardOpen, needResize;
+#include "Game.h"
+extern int interop_CanvasWidth(void); 
+extern int interop_CanvasHeight(void);
+extern int interop_ScreenWidth(void);
+extern int interop_ScreenHeight(void);
 
+static cc_bool keyboardOpen, needResize;
 static int RawDpiScale(int x)    { return (int)(x * emscripten_get_device_pixel_ratio()); }
-static int GetCanvasWidth(void)  { return EM_ASM_INT_V({ return Module['canvas'].width  }); }
-static int GetCanvasHeight(void) { return EM_ASM_INT_V({ return Module['canvas'].height }); }
-static int GetScreenWidth(void)  { return RawDpiScale(EM_ASM_INT_V({ return screen.width;  })); }
-static int GetScreenHeight(void) { return RawDpiScale(EM_ASM_INT_V({ return screen.height; })); }
+static int GetScreenWidth(void)  { return RawDpiScale(interop_ScreenWidth()); }
+static int GetScreenHeight(void) { return RawDpiScale(interop_ScreenHeight()); }
 
 static void UpdateWindowBounds(void) {
-	int width  = GetCanvasWidth();
-	int height = GetCanvasHeight();
+	int width  = interop_CanvasWidth();
+	int height = interop_CanvasHeight();
 	if (width == WindowInfo.Width && height == WindowInfo.Height) return;
 
 	WindowInfo.Width  = width;
@@ -3251,10 +2795,13 @@ static EM_BOOL OnMouseWheel(int type, const EmscriptenWheelEvent* ev, void* data
 
 static EM_BOOL OnMouseButton(int type, const EmscriptenMouseEvent* ev, void* data) {
 	cc_bool down = type == EMSCRIPTEN_EVENT_MOUSEDOWN;
+	/* https://stackoverflow.com/questions/60895686/how-to-get-mouse-buttons-4-5-browser-back-browser-forward-working-in-firef */
 	switch (ev->button) {
 		case 0: Input_Set(KEY_LMOUSE, down); break;
 		case 1: Input_Set(KEY_MMOUSE, down); break;
 		case 2: Input_Set(KEY_RMOUSE, down); break;
+		case 3: Input_Set(KEY_XBUTTON1, down); break;
+		case 4: Input_Set(KEY_XBUTTON2, down); break;
 	}
 
 	DeferredEnableRawMouse();
@@ -3289,15 +2836,8 @@ static EM_BOOL OnMouseMove(int type, const EmscriptenMouseEvent* ev, void* data)
 	return true;
 }
 
-/* TODO: Also query mouse coordinates globally and reuse adjustXY here */
-/* Adjust from document coordinates to element coordinates */
-static void AdjustXY(int* x, int* y) {
-	EM_ASM_({
-		var canvasRect = Module['canvas'].getBoundingClientRect();
-		HEAP32[$0 >> 2] = HEAP32[$0 >> 2] - canvasRect.left;
-		HEAP32[$1 >> 2] = HEAP32[$1 >> 2] - canvasRect.top;
-	}, x, y);
-}
+/* TODO: Also query mouse coordinates globally (in OnMouseMove) and reuse interop_AdjustXY here */
+extern void interop_AdjustXY(int* x, int* y);
 
 static EM_BOOL OnTouchStart(int type, const EmscriptenTouchEvent* ev, void* data) {
 	const EmscriptenTouchPoint* t;
@@ -3307,7 +2847,7 @@ static EM_BOOL OnTouchStart(int type, const EmscriptenTouchEvent* ev, void* data
 		if (!t->isChanged) continue;
 		x = t->targetX; y = t->targetY;
 
-		AdjustXY( &x, &y);
+		interop_AdjustXY(&x, &y);
 		RescaleXY(&x, &y);
 		Input_AddTouch(t->identifier, x, y);
 	}
@@ -3324,7 +2864,7 @@ static EM_BOOL OnTouchMove(int type, const EmscriptenTouchEvent* ev, void* data)
 		if (!t->isChanged) continue;
 		x = t->targetX; y = t->targetY;
 
-		AdjustXY( &x, &y);
+		interop_AdjustXY(&x, &y);
 		RescaleXY(&x, &y);
 		Input_UpdateTouch(t->identifier, x, y);
 	}
@@ -3341,7 +2881,7 @@ static EM_BOOL OnTouchEnd(int type, const EmscriptenTouchEvent* ev, void* data) 
 		if (!t->isChanged) continue;
 		x = t->targetX; y = t->targetY;
 
-		AdjustXY( &x, &y);
+		interop_AdjustXY(&x, &y);
 		RescaleXY(&x, &y);
 		Input_RemoveTouch(t->identifier, x, y);
 	}
@@ -3371,11 +2911,17 @@ static EM_BOOL OnFullscreenChange(int type, const EmscriptenFullscreenChangeEven
 }
 
 static const char* OnBeforeUnload(int type, const void* ev, void *data) {
+	if (!Game_ShouldClose()) {
+		/* Exit pointer lock, otherwise when you press Ctrl+W, the */
+		/*  cursor remains invisible in the confirmation dialog */
+		emscripten_exit_pointerlock();
+		return "You have unsaved changes. Are you sure you want to quit?";
+	}
 	Window_Close();
 	return NULL;
 }
 
-static int MapNativeKey(int k) {
+static int MapNativeKey(int k, int l) {
 	if (k >= '0' && k <= '9') return k;
 	if (k >= 'A' && k <= 'Z') return k;
 	if (k >= DOM_VK_F1      && k <= DOM_VK_F24)     { return KEY_F1  + (k - DOM_VK_F1); }
@@ -3384,10 +2930,10 @@ static int MapNativeKey(int k) {
 	switch (k) {
 	case DOM_VK_BACK_SPACE: return KEY_BACKSPACE;
 	case DOM_VK_TAB:        return KEY_TAB;
-	case DOM_VK_RETURN:     return KEY_ENTER;
-	case DOM_VK_SHIFT:      return KEY_LSHIFT;
-	case DOM_VK_CONTROL:    return KEY_LCTRL;
-	case DOM_VK_ALT:        return KEY_LALT;
+	case DOM_VK_RETURN:     return l == DOM_KEY_LOCATION_NUMPAD ? KEY_KP_ENTER : KEY_ENTER;
+	case DOM_VK_SHIFT:      return l == DOM_KEY_LOCATION_RIGHT  ? KEY_RSHIFT : KEY_LSHIFT;
+	case DOM_VK_CONTROL:    return l == DOM_KEY_LOCATION_RIGHT  ? KEY_RCTRL  : KEY_LCTRL;
+	case DOM_VK_ALT:        return l == DOM_KEY_LOCATION_RIGHT  ? KEY_RALT   : KEY_LALT;
 	case DOM_VK_PAUSE:      return KEY_PAUSE;
 	case DOM_VK_CAPS_LOCK:  return KEY_CAPSLOCK;
 	case DOM_VK_ESCAPE:     return KEY_ESCAPE;
@@ -3407,7 +2953,7 @@ static int MapNativeKey(int k) {
 
 	case DOM_VK_SEMICOLON:   return KEY_SEMICOLON;
 	case DOM_VK_EQUALS:      return KEY_EQUALS;
-	case DOM_VK_WIN:         return KEY_LWIN;
+	case DOM_VK_WIN:         return l == DOM_KEY_LOCATION_RIGHT  ? KEY_RWIN : KEY_LWIN;
 	case DOM_VK_MULTIPLY:    return KEY_KP_MULTIPLY;
 	case DOM_VK_ADD:         return KEY_KP_PLUS;
 	case DOM_VK_SUBTRACT:    return KEY_KP_MINUS;
@@ -3434,34 +2980,21 @@ static int MapNativeKey(int k) {
 	return KEY_NONE;
 }
 
-static EM_BOOL OnKey(int type, const EmscriptenKeyboardEvent* ev, void* data) {
-	int key = MapNativeKey(ev->keyCode);
-
-	if (ev->location == DOM_KEY_LOCATION_RIGHT) {
-		switch (key) {
-		case KEY_LALT:   key = KEY_RALT; break;
-		case KEY_LCTRL:  key = KEY_RCTRL; break;
-		case KEY_LSHIFT: key = KEY_RSHIFT; break;
-		case KEY_LWIN:   key = KEY_RWIN; break;
-		}
-	}
-	else if (ev->location == DOM_KEY_LOCATION_NUMPAD) {
-		switch (key) {
-		case KEY_ENTER: key = KEY_KP_ENTER; break;
-		}
-	}
-
-	if (key) Input_Set(key, type == EMSCRIPTEN_EVENT_KEYDOWN);
+static EM_BOOL OnKeyDown(int type, const EmscriptenKeyboardEvent* ev, void* data) {
+	int key = MapNativeKey(ev->keyCode, ev->location);
+	/* iOS safari still sends backspace key events, don't intercept those */
+	if (key == KEY_BACKSPACE && Input_TouchMode && keyboardOpen) return false;
+	
+	if (key) Input_SetPressed(key);
 	DeferredEnableRawMouse();
-
 	if (!key) return false;
-	/* KeyUp always intercepted */
-	if (type != EMSCRIPTEN_EVENT_KEYDOWN) return true;
 
 	/* If holding down Ctrl or Alt, keys aren't going to generate a KeyPress event anyways. */
 	/* This intercepts Ctrl+S etc. Ctrl+C and Ctrl+V are not intercepted for clipboard. */
-	if (Key_IsAltPressed() || Key_IsWinPressed()) return true;
-	if (Key_IsControlPressed() && key != 'C' && key != 'V') return true;
+	/*  NOTE: macOS uses Win (Command) key instead of Ctrl, have to account for that too */
+	if (Key_IsAltPressed())  return true;
+	if (Key_IsWinPressed())  return key != 'C' && key != 'V';
+	if (Key_IsCtrlPressed()) return key != 'C' && key != 'V';
 
 	/* Space needs special handling, as intercepting this prevents the ' ' key press event */
 	/* But on Safari, space scrolls the page - so need to intercept when keyboard is NOT open */
@@ -3472,6 +3005,13 @@ static EM_BOOL OnKey(int type, const EmscriptenKeyboardEvent* ev, void* data) {
 	/* e.g. not preventing F11 means browser makes page fullscreen instead of just canvas */
 	return (key >= KEY_F1  && key <= KEY_F24)  || (key >= KEY_UP    && key <= KEY_RIGHT) ||
 		(key >= KEY_INSERT && key <= KEY_MENU) || (key >= KEY_ENTER && key <= KEY_NUMLOCK);
+}
+
+static EM_BOOL OnKeyUp(int type, const EmscriptenKeyboardEvent* ev, void* data) {
+	int key = MapNativeKey(ev->keyCode, ev->location);
+	if (key) Input_SetReleased(key);
+	DeferredEnableRawMouse();
+	return key != KEY_NONE;
 }
 
 static EM_BOOL OnKeyPress(int type, const EmscriptenKeyboardEvent* ev, void* data) {
@@ -3486,6 +3026,10 @@ static EM_BOOL OnKeyPress(int type, const EmscriptenKeyboardEvent* ev, void* dat
 	/*   not actually backspace everything. (because the HTML text input does not */
 	/*   have these intercepted key presses in its text buffer) */
 	if (Input_TouchMode && keyboardOpen) return false;
+
+	/* Safari on macOS still sends a keypress event, which must not be cancelled */
+	/*  (otherwise copy/paste doesn't work, as it uses Win+C / Win+V) */
+	if (ev->metaKey) return false;
 
 	if (Convert_TryCodepointToCP437(ev->charCode, &keyChar)) {
 		Event_RaiseInt(&InputEvents.Press, keyChar);
@@ -3511,8 +3055,8 @@ static void HookEvents(void) {
 	emscripten_set_resize_callback(EMSCRIPTEN_EVENT_TARGET_WINDOW, NULL, 0, OnResize);
 	emscripten_set_beforeunload_callback(                          NULL,    OnBeforeUnload);
 
-	emscripten_set_keydown_callback(EMSCRIPTEN_EVENT_TARGET_WINDOW,  NULL, 0, OnKey);
-	emscripten_set_keyup_callback(EMSCRIPTEN_EVENT_TARGET_WINDOW,    NULL, 0, OnKey);
+	emscripten_set_keydown_callback(EMSCRIPTEN_EVENT_TARGET_WINDOW,  NULL, 0, OnKeyDown);
+	emscripten_set_keyup_callback(EMSCRIPTEN_EVENT_TARGET_WINDOW,    NULL, 0, OnKeyUp);
 	emscripten_set_keypress_callback(EMSCRIPTEN_EVENT_TARGET_WINDOW, NULL, 0, OnKeyPress);
 
 	emscripten_set_touchstart_callback(EMSCRIPTEN_EVENT_TARGET_WINDOW,  NULL, 0, OnTouchStart);
@@ -3542,6 +3086,10 @@ static void UnhookEvents(void) {
 	emscripten_set_touchcancel_callback(EMSCRIPTEN_EVENT_TARGET_WINDOW, NULL, 0, NULL);
 }
 
+extern int interop_IsAndroid(void);
+extern int interop_IsIOS(void);
+extern void interop_AddClipboardListeners(void);
+extern void interop_ForceTouchPageLayout(void);
 void Window_Init(void) {
 	int is_ios, droid;
 	DisplayInfo.Width  = GetScreenWidth();
@@ -3550,37 +3098,11 @@ void Window_Init(void) {
 
 	DisplayInfo.ScaleX = emscripten_get_device_pixel_ratio();
 	DisplayInfo.ScaleY = DisplayInfo.ScaleX;
+	interop_AddClipboardListeners();
 
-	/* Copy text, but only if user isn't selecting something else on the webpage */
-	/* (don't check window.clipboardData here, that's handled in Clipboard_SetText instead) */
-	EM_ASM(window.addEventListener('copy', 
-		function(e) {
-			if (window.getSelection && window.getSelection().toString()) return;
-			if (window.cc_copyText) {
-				if (e.clipboardData) { e.clipboardData.setData('text/plain', window.cc_copyText); }
-				e.preventDefault();
-				window.cc_copyText = null;
-			}	
-		});
-	);
-
-	/* Paste text (window.clipboardData is handled in Clipboard_RequestText instead) */
-	EM_ASM(window.addEventListener('paste',
-		function(e) {
-			var contents = e.clipboardData ? e.clipboardData.getData('text/plain') : "";
-			ccall('Window_GotClipboardText', 'void', ['string'], [contents]);
-		});
-	);
-
-	droid  = EM_ASM_INT_V({ return /Android/i.test(navigator.userAgent); });
-	/* iOS 13 on iPad doesn't identify itself as iPad by default anymore */
-	/*  https://stackoverflow.com/questions/57765958/how-to-detect-ipad-and-ipad-os-version-in-ios-13-and-up */
-	is_ios = EM_ASM_INT_V({
-		return /iPhone|iPad|iPod/i.test(navigator.userAgent) || 
-		(navigator.platform === 'MacIntel' && navigator.maxTouchPoints && navigator.maxTouchPoints > 2);
-	});
-	Input_TouchMode = is_ios || droid;
-	Pointers_Count  = Input_TouchMode ? 0 : 1;
+	droid  = interop_IsAndroid();
+	is_ios = interop_IsIOS();
+	Input_SetTouchMode(is_ios || droid);
 
 	/* iOS shifts the whole webpage up when opening chat, which causes problems */
 	/*  as the chat/send butons are positioned at the top of the canvas - they */
@@ -3590,80 +3112,57 @@ void Window_Init(void) {
 
 	/* Let the webpage know it needs to force a mobile layout */
 	if (!Input_TouchMode) return;
-	EM_ASM( if (typeof(forceTouchLayout) === 'function') forceTouchLayout(); );
+	interop_ForceTouchPageLayout();
 }
 
+extern void interop_InitContainer(void);
 void Window_Create(int width, int height) {
 	WindowInfo.Exists  = true;
 	WindowInfo.Focused = true;
 	HookEvents();
 	/* Let the webpage decide on initial bounds */
-	WindowInfo.Width  = GetCanvasWidth();
-	WindowInfo.Height = GetCanvasHeight();
-
-	/* Create wrapper div if necessary */
-	EM_ASM({
-		var agent  = navigator.userAgent;	
-		var canvas = Module['canvas'];
-		window.cc_container = document.body;
-
-		if (/Android/i.test(agent) && /Chrome/i.test(agent)) {
-			var wrapper = document.createElement("div");
-			wrapper.id  = 'canvas_wrapper';
-
-			canvas.parentNode.insertBefore(wrapper, canvas);
-			wrapper.appendChild(canvas);
-			window.cc_container = wrapper;
-		}
-	});
+	WindowInfo.Width  = interop_CanvasWidth();
+	WindowInfo.Height = interop_CanvasHeight();
+	interop_InitContainer();
 }
 
+extern void interop_SetPageTitle(const char* title);
 void Window_SetTitle(const cc_string* title) {
 	char str[NATIVE_STR_LEN];
 	Platform_EncodeUtf8(str, title);
-	EM_ASM_({ document.title = UTF8ToString($0); }, str);
+	interop_SetPageTitle(str);
 }
 
-static RequestClipboardCallback clipboard_func;
-static void* clipboard_obj;
+static char pasteBuffer[512];
+static cc_string pasteStr;
+EMSCRIPTEN_KEEPALIVE void Window_RequestClipboardText(void) {
+	Event_RaiseInput(&InputEvents.Down, INPUT_CLIPBOARD_COPY, 0);
+}
+
+EMSCRIPTEN_KEEPALIVE void Window_StoreClipboardText(char* src) {
+	String_InitArray(pasteStr, pasteBuffer);
+	String_AppendUtf8(&pasteStr, src, String_CalcLen(src, 2048));
+}
 
 EMSCRIPTEN_KEEPALIVE void Window_GotClipboardText(char* src) {
-	cc_string str; char strBuffer[512];
-	if (!clipboard_func) return;
-
-	String_InitArray(str, strBuffer);
-	String_AppendUtf8(&str, src, String_CalcLen(src, 2048));
-	clipboard_func(&str, clipboard_obj);
-	clipboard_func = NULL;
+	Window_StoreClipboardText(src);
+	Event_RaiseInput(&InputEvents.Down, INPUT_CLIPBOARD_PASTE, 0);
 }
 
-void Clipboard_GetText(cc_string* value) { }
+extern void interop_TryGetClipboardText(void);
+void Clipboard_GetText(cc_string* value) {
+	/* Window_StoreClipboardText may or may not be called by this */
+	interop_TryGetClipboardText();
+	
+	String_Copy(value, &pasteStr);
+	pasteStr.length = 0;
+}
+
+extern void interop_TrySetClipboardText(const char* text);
 void Clipboard_SetText(const cc_string* value) {
 	char str[NATIVE_STR_LEN];
 	Platform_EncodeUtf8(str, value);
-
-	/* For IE11, use window.clipboardData to set the clipboard */
-	/* For other browsers, instead use the window.copy events */
-	EM_ASM_({ 
-		if (window.clipboardData) {
-			if (window.getSelection && window.getSelection().toString()) return;
-			window.clipboardData.setData('Text', UTF8ToString($0));
-		} else {
-			window.cc_copyText = UTF8ToString($0);
-		}
-	}, str);
-}
-
-void Clipboard_RequestText(RequestClipboardCallback callback, void* obj) {
-	clipboard_func = callback;
-	clipboard_obj  = obj;
-
-	/* For IE11, use window.clipboardData to get the clipboard */
-	EM_ASM_({
-		if (!window.clipboardData) return;
-		var contents = window.clipboardData.getData('Text');
-		ccall('Window_GotClipboardText', 'void', ['string'], [contents]);
-	});
+	interop_TrySetClipboardText(str);
 }
 
 void Window_Show(void) { }
@@ -3674,6 +3173,8 @@ int Window_GetWindowState(void) {
 	return status.isFullscreen ? WINDOW_STATE_FULLSCREEN : WINDOW_STATE_NORMAL;
 }
 
+extern int interop_GetContainerID(void);
+extern void interop_EnterFullscreen(void);
 cc_result Window_EnterFullscreen(void) {
 	EmscriptenFullscreenStrategy strategy;
 	const char* target;
@@ -3685,28 +3186,15 @@ cc_result Window_EnterFullscreen(void) {
 	strategy.canvasResizedCallback         = OnCanvasResize;
 	strategy.canvasResizedCallbackUserData = NULL;
 
-	/* For chrome on android, need to make container div fullscreen instead */
-	res    = EM_ASM_INT_V({ return document.getElementById('canvas_wrapper') ? 1 : 0; });
+	/* TODO: Return container element ID instead of hardcoding here */
+	res    = interop_GetContainerID();
 	target = res ? "canvas_wrapper" : "#canvas";
 
 	res = emscripten_request_fullscreen_strategy(target, 1, &strategy);
 	if (res == EMSCRIPTEN_RESULT_NOT_SUPPORTED) res = ERR_NOT_SUPPORTED;
 	if (res) return res;
 
-	/* emscripten sets css size to screen's base width/height, */
-	/*  except that becomes wrong when device rotates. */
-	/* Better to just set CSS width/height to always be 100% */
-	EM_ASM({
-		var canvas = Module['canvas'];
-		canvas.style.width  = '100%';
-		canvas.style.height = '100%';
-	});
-
-	/* By default, pressing Escape will immediately exit fullscreen - which is */
-	/*   quite annoying given that it is also the Menu key. Some browsers allow */
-	/*   'locking' the Escape key, so that you have to hold down Escape to exit. */
-	/* NOTE: This ONLY works when the webpage is a https:// one */
-	EM_ASM({ try { navigator.keyboard.lock(["Escape"]); } catch (ex) { } });
+	interop_EnterFullscreen();
 	return 0;
 }
 
@@ -3736,6 +3224,7 @@ void Window_Close(void) {
 	UnhookEvents();
 }
 
+extern void interop_RequestCanvasResize(void);
 void Window_ProcessEvents(void) {
 	if (!needResize) return;
 	needResize = false;
@@ -3744,7 +3233,8 @@ void Window_ProcessEvents(void) {
 	if (Window_GetWindowState() == WINDOW_STATE_FULLSCREEN) {
 		SetFullscreenBounds();
 	} else {
-		EM_ASM( if (typeof(resizeGameCanvas) === 'function') resizeGameCanvas(); );
+		/* Webpage can adjust canvas size if it wants to */
+		interop_RequestCanvasResize();
 	}
 	UpdateWindowBounds();
 }
@@ -3754,16 +3244,14 @@ static void Cursor_GetRawPos(int* x, int* y) { *x = 0; *y = 0; }
 /* Not allowed to move cursor from javascript */
 void Cursor_SetPosition(int x, int y) { }
 
+extern void interop_SetCursorVisible(int visible);
 static void Cursor_DoSetVisible(cc_bool visible) {
-	if (visible) {
-		EM_ASM(Module['canvas'].style['cursor'] = 'default'; );
-	} else {
-		EM_ASM(Module['canvas'].style['cursor'] = 'none'; );
-	}
+	interop_SetCursorVisible(visible);
 }
 
-static void ShowDialogCore(const char* title, const char* msg) {
-	EM_ASM_({ alert(UTF8ToString($0) + "\n\n" + UTF8ToString($1)); }, title, msg);
+extern void interop_ShowDialog(const char* title, const char* msg);
+static void ShowDialogCore(const char* title, const char* msg) { 
+	interop_ShowDialog(title, msg); 
 }
 
 static OpenFileDialogCallback uploadCallback;
@@ -3776,45 +3264,21 @@ EMSCRIPTEN_KEEPALIVE void Window_OnFileUploaded(const char* src) {
 	uploadCallback = NULL;
 }
 
+extern void interop_OpenFileDialog(const char* filter);
 cc_result Window_OpenFileDialog(const char* filter, OpenFileDialogCallback callback) {
 	uploadCallback = callback;
-	EM_ASM_({
-		var elem = window.cc_uploadElem;
-		if (!elem) {
-			elem = document.createElement('input');
-			elem.setAttribute('type', 'file');
-			elem.setAttribute('style', 'display: none');
-			elem.accept = UTF8ToString($0);
-
-			elem.addEventListener('change', 
-				function(ev) {
-					var files = ev.target.files;
-					for (var i = 0; i < files.length; i++) {
-						var reader = new FileReader();
-						var name   = files[i].name;
-
-						reader.onload = function(e) { 
-							var data = new Uint8Array(e.target.result);
-							FS.createDataFile('/', name, data, true, true, true);
-							ccall('Window_OnFileUploaded', 'void', ['string'], ['/' + name]);
-							FS.unlink('/' + name);
-						};
-						reader.readAsArrayBuffer(files[i]);
-					}
-					window.cc_container.removeChild(window.cc_uploadElem);
-					window.cc_uploadElem = null;
-				}, false);
-			window.cc_uploadElem = elem;
-			window.cc_container.appendChild(elem);
-		}
-		elem.click();
-	}, filter);
+	/* Calls Window_OnFileUploaded on success */
+	interop_OpenFileDialog(filter);
 	return ERR_NOT_SUPPORTED;
 }
 
 void Window_AllocFramebuffer(struct Bitmap* bmp) { }
 void Window_DrawFramebuffer(Rect2D r)     { }
 void Window_FreeFramebuffer(struct Bitmap* bmp)  { }
+
+extern void interop_OpenKeyboard(const char* text, int type, const char* placeholder);
+extern void interop_SetKeyboardText(const char* text);
+extern void interop_CloseKeyboard(void);
 
 EMSCRIPTEN_KEEPALIVE void Window_OnTextChanged(const char* src) { 
 	cc_string str; char buffer[800];
@@ -3828,64 +3292,24 @@ void Window_OpenKeyboard(const struct OpenKeyboardArgs* args) {
 	char str[NATIVE_STR_LEN];
 	keyboardOpen = true;
 	if (!Input_TouchMode) return;
+
 	Platform_EncodeUtf8(str, args->text);
 	Platform_LogConst("OPEN SESAME");
-
-	EM_ASM_({
-		var elem = window.cc_inputElem;
-		if (!elem) {
-			if ($1 == 1) {
-				elem = document.createElement('input');
-				elem.setAttribute('inputmode', 'decimal');
-			} else {
-				elem = document.createElement('textarea');
-			}
-			elem.setAttribute('style', 'position:absolute; left:0; bottom:0; margin: 0px; width: 100%');
-			elem.setAttribute('placeholder', UTF8ToString($2));
-			elem.value = UTF8ToString($0);
-
-			elem.addEventListener('input', 
-				function(ev) {
-					ccall('Window_OnTextChanged', 'void', ['string'], [ev.target.value]);
-				}, false);
-			window.cc_inputElem = elem;
-
-			window.cc_divElem = document.createElement('div');
-			window.cc_divElem.setAttribute('style', 'position:absolute; left:0; top:0; width:100%; height:100%; background-color: black; opacity:0.4; resize:none; pointer-events:none;');
-			
-			window.cc_container.appendChild(window.cc_divElem);
-			window.cc_container.appendChild(elem);
-		}
-		elem.focus();
-		elem.click();
-	}, str, args->type, args->placeholder);
+	interop_OpenKeyboard(str, args->type, args->placeholder);
 }
 
 void Window_SetKeyboardText(const cc_string* text) {
 	char str[NATIVE_STR_LEN];
 	if (!Input_TouchMode) return;
+
 	Platform_EncodeUtf8(str, text);
-
-	EM_ASM_({
-		if (!window.cc_inputElem) return;
-		var str = UTF8ToString($0);
-
-		if (str == window.cc_inputElem.value) return;
-		window.cc_inputElem.value = str;
-	}, str);
+	interop_SetKeyboardText(str);
 }
 
 void Window_CloseKeyboard(void) {
 	keyboardOpen = false;
 	if (!Input_TouchMode) return;
-
-	EM_ASM({
-		if (!window.cc_inputElem) return;
-		window.cc_container.removeChild(window.cc_divElem);
-		window.cc_container.removeChild(window.cc_inputElem);
-		window.cc_divElem   = null;
-		window.cc_inputElem = null;
-	});
+	interop_CloseKeyboard();
 }
 
 void Window_EnableRawMouse(void) {
@@ -4003,18 +3427,18 @@ static void JNICALL java_processKeyText(JNIEnv* env, jobject o, jstring str) {
 	Event_RaiseString(&InputEvents.TextChanged, &text);
 }
 
-static void JNICALL java_processMouseDown(JNIEnv* env, jobject o, jint id, jint x, jint y) {
-	Platform_Log3("MOUSE %i - DOWN %i,%i", &id, &x, &y);
+static void JNICALL java_processPointerDown(JNIEnv* env, jobject o, jint id, jint x, jint y, jint isMouse) {
+	Platform_Log4("POINTER %i (%i) - DOWN %i,%i", &id, &isMouse, &x, &y);
 	Input_AddTouch(id, x, y);
 }
 
-static void JNICALL java_processMouseUp(JNIEnv* env, jobject o, jint id, jint x, jint y) {
-	Platform_Log3("MOUSE %i - UP   %i,%i", &id, &x, &y);
+static void JNICALL java_processPointerUp(JNIEnv* env, jobject o, jint id, jint x, jint y, jint isMouse) {
+	Platform_Log4("POINTER %i (%i) - UP   %i,%i", &id, &isMouse, &x, &y);
 	Input_RemoveTouch(id, x, y);
 }
 
-static void JNICALL java_processMouseMove(JNIEnv* env, jobject o, jint id, jint x, jint y) {
-	Platform_Log3("MOUSE %i - MOVE %i,%i", &id, &x, &y);
+static void JNICALL java_processPointerMove(JNIEnv* env, jobject o, jint id, jint x, jint y, jint isMouse) {
+	Platform_Log4("POINTER %i (%i) - MOVE %i,%i", &id, &isMouse, &x, &y);
 	Input_UpdateTouch(id, x, y);
 }
 
@@ -4100,9 +3524,9 @@ static const JNINativeMethod methods[19] = {
 	{ "processKeyChar",   "(I)V", java_processKeyChar },
 	{ "processKeyText",   "(Ljava/lang/String;)V", java_processKeyText },
 
-	{ "processMouseDown", "(III)V", java_processMouseDown },
-	{ "processMouseUp",   "(III)V", java_processMouseUp },
-	{ "processMouseMove", "(III)V", java_processMouseMove },
+	{ "processPointerDown", "(IIII)V", java_processPointerDown },
+	{ "processPointerUp",   "(IIII)V", java_processPointerUp },
+	{ "processPointerMove", "(IIII)V", java_processPointerMove },
 
 	{ "processSurfaceCreated",      "(Landroid/view/Surface;)V",  java_processSurfaceCreated },
 	{ "processSurfaceDestroyed",    "()V",                        java_processSurfaceDestroyed },
@@ -4127,7 +3551,8 @@ void Window_Init(void) {
 	JavaRegisterNatives(env, methods);
 
 	WindowInfo.SoftKeyboard = SOFT_KEYBOARD_RESIZE;
-	Input_TouchMode         = true;
+	Input_SetTouchMode(true);
+
 	DisplayInfo.Depth  = 32;
 	DisplayInfo.ScaleX = JavaCallFloat(env, "getDpiX", "()F", NULL);
 	DisplayInfo.ScaleY = JavaCallFloat(env, "getDpiY", "()F", NULL);
@@ -4223,6 +3648,8 @@ static void ShowDialogCore(const char* title, const char* msg) {
 
 	Platform_LogConst(title);
 	Platform_LogConst(msg);
+	/* in case surface destroyed message has arrived */
+	Window_ProcessEvents();
 
 	args[0].l = JavaMakeConst(env, title);
 	args[1].l = JavaMakeConst(env, msg);
@@ -4275,13 +3702,13 @@ void Window_FreeFramebuffer(struct Bitmap* bmp) {
 	Mem_Free(bmp->scan0);
 }
 
-void Window_OpenKeyboard(const struct OpenKeyboardArgs* args) {
+void Window_OpenKeyboard(const struct OpenKeyboardArgs* kArgs) {
 	JNIEnv* env;
 	jvalue args[2];
 	JavaGetCurrentEnv(env);
 
-	args[0].l = JavaMakeString(env, args->text);
-	args[1].i = args->type;
+	args[0].l = JavaMakeString(env, kArgs->text);
+	args[1].i = kArgs->type;
 	JavaCallVoid(env, "openKeyboard", "(Ljava/lang/String;I)V", args);
 	(*env)->DeleteLocalRef(env, args[0].l);
 }
@@ -4312,7 +3739,6 @@ void Window_DisableRawMouse(void) { DefaultDisableRawMouse(); }
 #ifdef CC_BUILD_GL
 /* OpenGL contexts are heavily tied to the window, so for simplicitly are also included here */
 /* SDL and EGL are platform agnostic, other OpenGL context backends are tied to one windowing system. */
-#define GLCONTEXT_DEFAULT_DEPTH 24
 #define GLContext_IsInvalidAddress(ptr) (ptr == (void*)0 || ptr == (void*)1 || ptr == (void*)-1 || ptr == (void*)2)
 
 void GLContext_GetAll(const struct DynamicLibSym* syms, int count) {
@@ -4670,12 +4096,11 @@ static XVisualInfo GLContext_SelectVisual(void) {
 
 	InitGraphicsMode(&mode);
 	GetAttribs(&mode, attribs, GLCONTEXT_DEFAULT_DEPTH);
-	if (!glXQueryVersion(win_display, &major, &minor)) {
-		Logger_Abort("glXQueryVersion failed");
-	}
 	screen = DefaultScreen(win_display);
 
-	if (major >= 1 && minor >= 3) {
+	if (!glXQueryVersion(win_display, &major, &minor)) {
+		Platform_LogConst("glXQueryVersion failed");
+	} else if (major >= 1 && minor >= 3) {
 		/* ChooseFBConfig returns an array of GLXFBConfig opaque structures */
 		fbconfigs = glXChooseFBConfig(win_display, screen, attribs, &fbcount);
 		if (fbconfigs && fbcount) {
@@ -4880,61 +4305,8 @@ void GLContext_GetApiInfo(cc_string* info) { }
 *--------------------------------------------------------NSOpenGL---------------------------------------------------------*
 *#########################################################################################################################*/
 #elif defined CC_BUILD_COCOA
-#define NSOpenGLPFADoubleBuffer 5
-#define NSOpenGLPFAColorSize    8
-#define NSOpenGLPFADepthSize    12
-#define NSOpenGLPFAFullScreen   54
-#define NSOpenGLContextParameterSwapInterval 222
-
-static id ctxHandle;
-static id MakePixelFormat(struct GraphicsMode* mode, cc_bool fullscreen) {
-	id fmt;
-	uint32_t attribs[7] = {
-		NSOpenGLPFAColorSize,    0,
-		NSOpenGLPFADepthSize,    GLCONTEXT_DEFAULT_DEPTH,
-		NSOpenGLPFADoubleBuffer, 0, 0
-	};
-
-	attribs[1] = mode->R + mode->G + mode->B + mode->A;
-	attribs[5] = fullscreen ? NSOpenGLPFAFullScreen : 0;
-	fmt = objc_msgSend((id)objc_getClass("NSOpenGLPixelFormat"), sel_registerName("alloc"));
-	return objc_msgSend(fmt, sel_registerName("initWithAttributes:"), attribs);
-}
-
-void GLContext_Create(void) {
-	struct GraphicsMode mode;
-	id view, fmt;
-
-	InitGraphicsMode(&mode);
-	fmt = MakePixelFormat(&mode, true);
-	if (!fmt) {
-		Platform_LogConst("Failed to create full screen pixel format.");
-		Platform_LogConst("Trying again to create a non-fullscreen pixel format.");
-		fmt = MakePixelFormat(&mode, false);
-	}
-	if (!fmt) Logger_Abort("Choosing pixel format");
-
-	ctxHandle = objc_msgSend((id)objc_getClass("NSOpenGLContext"), sel_registerName("alloc"));
-	ctxHandle = objc_msgSend(ctxHandle, sel_registerName("initWithFormat:shareContext:"), fmt, NULL);
-	if (!ctxHandle) Logger_Abort("Failed to create OpenGL context");
-
-	objc_msgSend(ctxHandle, sel_registerName("setView:"), viewHandle);
-	objc_msgSend(fmt,       sel_registerName("release"));
-	objc_msgSend(ctxHandle, sel_registerName("makeCurrentContext"));
-	objc_msgSend(ctxHandle, selUpdate);
-}
-
-void GLContext_Update(void) {
-	// TODO: Why does this crash on resizing
-	objc_msgSend(ctxHandle, selUpdate);
-}
+/* NOTE: Mostly implemented in interop_cocoa.m */
 cc_bool GLContext_TryRestore(void) { return true; }
-
-void GLContext_Free(void) { 
-	objc_msgSend((id)objc_getClass("NSOpenGLContext"), sel_registerName("clearCurrentContext"));
-	objc_msgSend(ctxHandle, sel_registerName("clearDrawable"));
-	objc_msgSend(ctxHandle, sel_registerName("release"));
-}
 
 void* GLContext_GetAddress(const char* function) {
 	static const cc_string glPath = String_FromConst("/System/Library/Frameworks/OpenGL.framework/Versions/Current/OpenGL");
@@ -4946,15 +4318,6 @@ void* GLContext_GetAddress(const char* function) {
 	return GLContext_IsInvalidAddress(addr) ? NULL : addr;
 }
 
-cc_bool GLContext_SwapBuffers(void) {
-	objc_msgSend(ctxHandle, selFlushBuffer);
-	return true;
-}
-
-void GLContext_SetFpsLimit(cc_bool vsync, float minFrameMs) {
-	int value = vsync ? 1 : 0;
-	objc_msgSend(ctxHandle, sel_registerName("setValues:forParameter:"), &value, NSOpenGLContextParameterSwapInterval);
-}
 void GLContext_GetApiInfo(cc_string* info) { }
 
 
@@ -5008,15 +4371,11 @@ void GLContext_SetFpsLimit(cc_bool vsync, float minFrameMs) {
 	}
 }
 
+extern void interop_GetGpuRenderer(char* buffer, int len);
 void GLContext_GetApiInfo(cc_string* info) { 
 	char buffer[NATIVE_STR_LEN];
 	int len;
-
-	EM_ASM_({
-		var dbg = GLctx.getExtension('WEBGL_debug_renderer_info');
-		var str = dbg ? GLctx.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : "";
-		stringToUTF8(str, $0, $1);
-	}, buffer, NATIVE_STR_LEN);
+	interop_GetGpuRenderer(buffer, NATIVE_STR_LEN);
 
 	len = String_CalcLen(buffer, NATIVE_STR_LEN);
 	if (!len) return;

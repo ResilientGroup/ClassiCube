@@ -473,7 +473,7 @@ static void Game_Render3D(double delta, float t) {
 
 	Selections_Render();
 	Entities_RenderHoveredNames();
-	InputHandler_PickBlocks();
+	InputHandler_Tick();
 	if (!Game_HideGui) HeldBlockRenderer_Render(delta);
 }
 
@@ -510,16 +510,9 @@ void Game_TakeScreenshot(void) {
 	String_Format3(&filename, "-%p2-%p2-%p2.png", &now.hour, &now.minute, &now.second);
 
 #ifdef CC_BUILD_WEB
+	extern void interop_TakeScreenshot(const char* path);
 	Platform_EncodeUtf8(str, &filename);
-	EM_ASM_({
-		var name   = UTF8ToString($0);
-		var canvas = Module['canvas'];
-		if (canvas.toBlob) {
-			canvas.toBlob(function(blob) { Module.saveBlob(blob, name); });
-		} else if (canvas.msToBlob) {
-			Module.saveBlob(canvas.msToBlob(), name);
-		}
-	}, str);
+	interop_TakeScreenshot(str);
 #elif CC_BUILD_MINFILES
 	/* no screenshots for these systems */
 #else
@@ -590,7 +583,6 @@ static void Game_RenderFrame(double delta) {
 	UpdateViewMatrix();
 
 	Gfx_LoadMatrix(MATRIX_PROJECTION, &Gfx.Projection);
-
 	Gfx_LoadMatrix(MATRIX_VIEW, &Gfx.View);
 
 	if (!Gui_GetBlocksWorld()) {
@@ -648,6 +640,18 @@ static void Game_RunLoop(void) {
 	/* The Game_SetFpsLimit call back in Game_Load does nothing because no main loop yet */
 	/*  Now thats there's a main loop, Game_SetFpsLimit will actually do something */
 	Game_SetFpsLimit(Options_GetEnum(OPT_FPS_LIMIT, 0, FpsLimit_Names, FPS_LIMIT_COUNT));
+}
+
+cc_bool Game_ShouldClose(void) {
+	if (Server.IsSinglePlayer) {
+		/* Close if map was saved within last 5 seconds */
+		return World.LastSave + 5 >= Game.Time;
+	}
+
+	/* Try to intercept Ctrl+W or Cmd+W for multiplayer */
+	if (Key_IsCtrlPressed() || Key_IsWinPressed()) return false;
+	/* Also try to intercept mouse back button (Mouse4) */
+	return !Input_Pressed[KEY_XBUTTON1];
 }
 #else
 static void Game_RunLoop(void) {

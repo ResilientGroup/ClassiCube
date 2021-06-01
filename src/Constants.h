@@ -5,22 +5,22 @@
 */
 
 #define GAME_MAX_CMDARGS 5
-#define GAME_APP_VER "1.2.3"
+#define GAME_APP_VER "1.2.5"
 #define GAME_API_VER 1
 
 #if defined CC_BUILD_WEB
-#define GAME_APP_ALT   "ClassiCube web mobile"
-#define GAME_APP_NAME  "ClassiCube web"
+#define GAME_APP_ALT   "ClassiCube 1.2.5 web mobile"
+#define GAME_APP_NAME  "ClassiCube 1.2.5 web"
 #define GAME_APP_TITLE "ClassiCube"
 #elif defined CC_BUILD_COCOA
-#define GAME_APP_NAME  "ClassiCube 1.2.3 alpha"
-#define GAME_APP_TITLE "ClassiCube 1.2.3 alpha"
+#define GAME_APP_NAME  "ClassiCube 1.2.5 alpha"
+#define GAME_APP_TITLE "ClassiCube 1.2.5 alpha"
 #elif defined CC_BUILD_ANDROID
-#define GAME_APP_NAME  "ClassiCube 1.2.3 android alpha"
-#define GAME_APP_TITLE "ClassiCube 1.2.3 android alpha"
+#define GAME_APP_NAME  "ClassiCube 1.2.5 android alpha"
+#define GAME_APP_TITLE "ClassiCube 1.2.5 android alpha"
 #else
-#define GAME_APP_NAME  "ClassiCube 1.2.3"
-#define GAME_APP_TITLE "ClassiCube 1.2.3"
+#define GAME_APP_NAME  "ClassiCube 1.2.5"
+#define GAME_APP_TITLE "ClassiCube 1.2.5"
 #endif
 
 /* Max number of characters strings can have. */
@@ -71,7 +71,7 @@ enum SKIN_TYPE { SKIN_64x32, SKIN_64x64, SKIN_64x64_SLIM, SKIN_INVALID = 0xF0 };
 #define Int32_MaxValue  ((cc_int32)2147483647L)
 
 /* Skins were moved to use Amazon S3, so link directly to avoid a pointless redirect */
-#define SKINS_SERVER    "http://classicube.s3.amazonaws.com/skin/"
+#define SKINS_SERVER    "http://classicube.s3.amazonaws.com/skin"
 #define UPDATES_SERVER  "http://cs.classicube.net/client"
 #define SERVICES_SERVER "https://www.classicube.net/api"
 #define RESOURCE_SERVER "http://static.classicube.net"

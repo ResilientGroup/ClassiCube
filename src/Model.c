@@ -757,8 +757,8 @@ static void CustomModel_Draw(struct Entity* e) {
 	int partIndex;
 
 	Model_ApplyTexture(e);
-	Models.uScale = 1.0f / cm->uScale;
-	Models.vScale = 1.0f / cm->vScale;
+	Models.uScale = e->uScale / cm->uScale;
+	Models.vScale = e->vScale / cm->vScale;
 
 	for (partIndex = 0; partIndex < cm->numParts; partIndex++) {
 		CustomModel_DrawPart(&cm->parts[partIndex], cm, e);
@@ -944,12 +944,12 @@ static void HumanModel_MakeParts(void) {
 		BoxDesc_Rot(0,12,0),
 	};
 
-	static struct BoxDesc lArm = {
+	static const struct BoxDesc lArm = {
 		BoxDesc_Tex(40,16),
 		BoxDesc_Box(-4,12,-2, -8,24,2),
 		BoxDesc_Rot(-5,22,0),
 	};
-	static struct BoxDesc rArm = {
+	static const struct BoxDesc rArm = {
 		BoxDesc_Tex(40,16),
 		BoxDesc_Box(4,12,-2, 8,24,2),
 		BoxDesc_Rot(5,22,0),
@@ -965,7 +965,7 @@ static void HumanModel_MakeParts(void) {
 		BoxDesc_Rot(0,12,0),
 	};
 
-	static struct BoxDesc lArm64 = {
+	static const struct BoxDesc lArm64 = {
 		BoxDesc_Tex(32,48),
 		BoxDesc_Box(-8,12,-2, -4,24,2),
 		BoxDesc_Rot(-5,22,0),
@@ -975,13 +975,13 @@ static void HumanModel_MakeParts(void) {
 		BoxDesc_Box(-4,0,-2, 0,12,2),
 		BoxDesc_Rot(0,12,0),
 	};
-	static struct BoxDesc lArmL = {
+	static const struct BoxDesc lArmL = {
 		BoxDesc_Tex(48,48),
 		BoxDesc_Dims(-8,12,-2, -4,24,2),
 		BoxDesc_Bounds(-8.5f,11.5f,-2.5f, -3.5f,24.5f,2.5f),
 		BoxDesc_Rot(-5,22,0),
 	};
-	static struct BoxDesc rArmL = {
+	static const struct BoxDesc rArmL = {
 		BoxDesc_Tex(40,32),
 		BoxDesc_Dims(4,12,-2, 8,24,2),
 		BoxDesc_Bounds(3.5f,11.5f,-2.5f, 8.5f,24.5f,2.5f),
@@ -1000,6 +1000,30 @@ static void HumanModel_MakeParts(void) {
 		BoxDesc_Rot(0,12,0),
 	};
 
+	/* Thin arms - make sure to keep in sync with lArm64/rArm/lArmL/rArmL */
+	static const struct BoxDesc thin_lArm = {
+		BoxDesc_Tex(32,48),
+		BoxDesc_Box(-7,12,-2, -4,24,2),
+		BoxDesc_Rot(-5,22,0),
+	};
+	static const struct BoxDesc thin_rArm = {
+		BoxDesc_Tex(40,16),
+		BoxDesc_Box(4,12,-2, 7,24,2),
+		BoxDesc_Rot(5,22,0),
+	};
+	static const struct BoxDesc thin_lArmL = {
+		BoxDesc_Tex(48,48),
+		BoxDesc_Dims(-7,12,-2, -4,24,2),
+		BoxDesc_Bounds(-7.5f,11.5f,-2.5f, -3.5f,24.5f,2.5f),
+		BoxDesc_Rot(-5,22,0),
+	};
+	static const struct BoxDesc thin_rArmL = {
+		BoxDesc_Tex(40,32),
+		BoxDesc_Dims(4,12,-2, 7,24,2),
+		BoxDesc_Bounds(3.5f,11.5f,-2.5f, 7.5f,24.5f,2.5f),
+		BoxDesc_Rot(5,22,0),
+	};
+
 	struct ModelLimbs* set     = &human_set.limbs[0];
 	struct ModelLimbs* set64   = &human_set.limbs[1];
 	struct ModelLimbs* setSlim = &human_set.limbs[2];
@@ -1014,33 +1038,29 @@ static void HumanModel_MakeParts(void) {
 	BoxDesc_BuildBox(&set->leftArm,  &lArm);
 	BoxDesc_BuildBox(&set->rightArm, &rArm);
 
-	/* 64x64 arms */
+	/* 64x64 arms and legs */
 	BoxDesc_BuildBox(&set64->leftLeg, &lLeg64);
 	set64->rightLeg = set->rightLeg;
 	BoxDesc_BuildBox(&set64->leftArm, &lArm64);
 	set64->rightArm = set->rightArm;
 
-	lArm64.sizeX -= 1; lArm64.x1 += 1.0f/16.0f;
-	rArm.sizeX   -= 1; rArm.x2   -= 1.0f/16.0f;
-
+	/* Thin arms and legs */
 	setSlim->leftLeg  = set64->leftLeg;
 	setSlim->rightLeg = set64->rightLeg;
-	BoxDesc_BuildBox(&setSlim->leftArm,  &lArm64);
-	BoxDesc_BuildBox(&setSlim->rightArm, &rArm);
+	BoxDesc_BuildBox(&setSlim->leftArm,  &thin_lArm);
+	BoxDesc_BuildBox(&setSlim->rightArm, &thin_rArm);
 
-	/* 64x64 legs */
+	/* 64x64 arm and leg layers */
 	BoxDesc_BuildBox(&set64->leftLegLayer,  &lLegL);
 	BoxDesc_BuildBox(&set64->rightLegLayer, &rLegL);
 	BoxDesc_BuildBox(&set64->leftArmLayer,  &lArmL);
 	BoxDesc_BuildBox(&set64->rightArmLayer, &rArmL);
 
-	lArmL.sizeX -= 1; lArmL.x1 += 1.0f/16.0f;
-	rArmL.sizeX -= 1; rArmL.x2 -= 1.0f/16.0f;
-
+	/* Thin arm and leg layers */
 	setSlim->leftLegLayer  = set64->leftLegLayer;
 	setSlim->rightLegLayer = set64->rightLegLayer;
-	BoxDesc_BuildBox(&setSlim->leftArmLayer,  &lArmL);
-	BoxDesc_BuildBox(&setSlim->rightArmLayer, &rArmL);
+	BoxDesc_BuildBox(&setSlim->leftArmLayer,  &thin_lArmL);
+	BoxDesc_BuildBox(&setSlim->rightArmLayer, &thin_rArmL);
 }
 
 static void HumanModel_Draw(struct Entity* e) {
@@ -2112,6 +2132,79 @@ static void SkinnedCubeModel_Register(void) {
 }
 
 
+
+/*########################################################################################################################*
+*---------------------------------------------------------HoldModel-------------------------------------------------------*
+*#########################################################################################################################*/
+static void RecalcProperties(struct Entity* e) {
+	// Calculate block ID based on the X scale of the model
+	// E.g, hold|1.001 = stone (ID = 1), hold|1.041 = gold (ID = 41) etc.
+	BlockID block = (BlockID)((e->ModelScale.X - 0.9999f) * 1000);
+
+	if (block > 0) {
+		// Change the block that the player is holding
+		if (block < BLOCK_COUNT) e->ModelBlock = block;
+		else e->ModelBlock = BLOCK_AIR;
+
+		Vec3_Set(e->ModelScale, 1, 1, 1);
+		Entity_UpdateModelBounds(e); // Adjust size/modelAABB after changing model scale
+	}
+}
+
+static void DrawBlockTransform(struct Entity* e, float dispX, float dispY, float dispZ, float scale) {
+	static Vec3 pos;
+	static struct Matrix m, temp;
+
+	pos = e->Position;
+	pos.Y += e->Anim.BobbingModel;
+
+	Entity_GetTransform(e, pos, e->ModelScale, &m);
+	Matrix_Mul(&m, &m, &Gfx.View);
+	Matrix_Translate(&temp, dispX, dispY, dispZ);
+	Matrix_Mul(&m, &temp, &m);
+	Matrix_Scale(&temp, scale / 1.5f, scale / 1.5f, scale / 1.5f);
+	Matrix_Mul(&m, &temp, &m);
+
+	Model_SetupState(&block_model, e);
+	Gfx_LoadMatrix(MATRIX_VIEW, &m);
+	block_model.Draw(e);
+}
+
+static void HoldModel_Draw(struct Entity* e) {
+	static float handBob;
+	static float handIdle;
+
+	RecalcProperties(e);
+
+	handBob = (float)Math_Sin(e->Anim.WalkTime * 2.0f) * e->Anim.Swing * MATH_PI / 16.0f;
+	handIdle = e->Anim.RightArmX * (1.0f - e->Anim.Swing);
+
+	e->Anim.RightArmX = 0.5f + handBob + handIdle;
+	e->Anim.RightArmZ = 0;
+
+	Model_SetupState(Models.Human, e);
+	HumanModel_Draw(e);
+
+	DrawBlockTransform(e, 0.33F, (MATH_PI / 3 + handBob + handIdle) * 10 / 16 + 0.127f, -7.0f / 16, 0.5f);
+}
+
+static struct Model hold_model;
+
+static float HoldModel_GetEyeY(struct Entity* e) {
+	RecalcProperties(e);
+	return HumanModel_GetEyeY(e);
+}
+
+static void HoldModel_Register(void) {
+	hold_model = human_model;
+	hold_model.name = "hold";
+	hold_model.MakeParts = Model_NoParts;
+	hold_model.Draw = HoldModel_Draw;
+	hold_model.GetEyeY = HoldModel_GetEyeY;
+	Model_Register(&hold_model);
+}
+
+
 /*########################################################################################################################*
 *-------------------------------------------------------Models component--------------------------------------------------*
 *#########################################################################################################################*/
@@ -2146,6 +2239,7 @@ static void RegisterDefaultModels(void) {
 	SittingModel_Register();
 	CorpseModel_Register();
 	SkinnedCubeModel_Register();
+	HoldModel_Register();
 }
 
 static void OnContextLost(void* obj) {

@@ -51,8 +51,6 @@ int Pointers_Count;
 cc_bool Input_TapPlace = true, Input_HoldPlace = false;
 cc_bool Input_TouchMode;
 
-static void DoDeleteBlock(void);
-static void DoPlaceBlock(void);
 static void MouseStatePress(int button);
 static void MouseStateRelease(int button);
 
@@ -68,27 +66,15 @@ static cc_bool AnyBlockTouches(void) {
 	return false;
 }
 
-void Input_AddTouch(long id, int x, int y) {
+static void ClearTouches(void) {
 	int i;
-	for (i = 0; i < INPUT_MAX_POINTERS; i++) {
-		if (touches[i].type) continue;
+	for (i = 0; i < INPUT_MAX_POINTERS; i++) touches[i].type = 0;
+	Pointers_Count = Input_TouchMode ? 0 : 1;
+}
 
-		touches[i].id   = id;
-		touches[i].type = TOUCH_TYPE_ALL;
-		touches[i].begX = x;
-		touches[i].begY = y;
-
-		touches[i].start = DateTime_CurrentUTC_MS();
-		/* Also set last click time, otherwise quickly tapping */
-		/* sometimes triggers a 'delete' in InputHandler_PickBlocks, */
-		/* and then another 'delete' in CheckBlockTap. */
-		input_lastClick  = touches[i].start;
-
-		if (i == Pointers_Count) Pointers_Count++;
-		Pointer_SetPosition(i, x, y);
-		Pointer_SetPressed(i, true);
-		return;
-	}
+void Input_SetTouchMode(cc_bool enabled) {
+	Input_TouchMode = enabled;
+	ClearTouches();
 }
 
 static cc_bool MovedFromBeg(int i, int x, int y) {
@@ -96,11 +82,11 @@ static cc_bool MovedFromBeg(int i, int x, int y) {
 		   Math_AbsI(y - touches[i].begY) > Display_ScaleY(5);
 }
 
-void Input_UpdateTouch(long id, int x, int y) {
+static cc_bool TryUpdateTouch(long id, int x, int y) {
 	int i;
 	for (i = 0; i < Pointers_Count; i++) {
 		if (touches[i].id != id || !touches[i].type) continue;
-		
+
 		if (Input_RawMode && (touches[i].type & TOUCH_TYPE_CAMERA)) {
 			/* If the pointer hasn't been locked to gui or block yet, moving a bit */
 			/* should cause the pointer to get locked to camera movement. */
@@ -113,9 +99,37 @@ void Input_UpdateTouch(long id, int x, int y) {
 			Event_RaiseRawMove(&PointerEvents.RawMoved, x - Pointers[i].x, y - Pointers[i].y);
 		}
 		Pointer_SetPosition(i, x, y);
+		return true;
+	}
+	return false;
+}
+
+void Input_AddTouch(long id, int x, int y) {
+	int i;
+	/* Check if already existing pointer with same ID */
+	if (TryUpdateTouch(id, x, y)) return;
+
+	for (i = 0; i < INPUT_MAX_POINTERS; i++) {
+		if (touches[i].type) continue;
+
+		touches[i].id   = id;
+		touches[i].type = TOUCH_TYPE_ALL;
+		touches[i].begX = x;
+		touches[i].begY = y;
+
+		touches[i].start = DateTime_CurrentUTC_MS();
+		/* Also set last click time, otherwise quickly tapping */
+		/* sometimes triggers a 'delete' in InputHandler_Tick, */
+		/* and then another 'delete' in CheckBlockTap. */
+		input_lastClick  = touches[i].start;
+
+		if (i == Pointers_Count) Pointers_Count++;
+		Pointer_SetPosition(i, x, y);
+		Pointer_SetPressed(i, true);
 		return;
 	}
 }
+void Input_UpdateTouch(long id, int x, int y) { TryUpdateTouch(id, x, y); }
 
 /* Quickly tapping should trigger a block place/delete */
 static void CheckBlockTap(int i) {
@@ -127,9 +141,11 @@ static void CheckBlockTap(int i) {
 	pressed = input_buttonsDown[btn];
 	MouseStatePress(btn);
 
-	if (btn == MOUSE_LEFT) { DoDeleteBlock(); }
-	else { DoPlaceBlock(); }
-
+	if (btn == MOUSE_LEFT) { 
+		InputHandler_DeleteBlock();
+	} else { 
+		InputHandler_PlaceBlock();
+	}
 	if (!pressed) MouseStateRelease(btn);
 }
 
@@ -149,6 +165,8 @@ void Input_RemoveTouch(long id, int x, int y) {
 		return;
 	}
 }
+#else
+static void ClearTouches(void) { }
 #endif
 
 
@@ -215,6 +233,9 @@ void Input_SetPressed(int key) {
 	Input_Pressed[key] = true;
 	Event_RaiseInput(&InputEvents.Down, key, wasPressed);
 
+	if (key == 'C' && Key_IsActionPressed()) Event_RaiseInput(&InputEvents.Down, INPUT_CLIPBOARD_COPY,  0);
+	if (key == 'V' && Key_IsActionPressed()) Event_RaiseInput(&InputEvents.Down, INPUT_CLIPBOARD_PASTE, 0);
+
 	/* don't allow multiple left mouse down events */
 	if (key != KEY_LMOUSE || wasPressed) return;
 	Pointer_SetPressed(0, true);
@@ -250,6 +271,8 @@ void Input_Clear(void) {
 	for (i = 0; i < INPUT_COUNT; i++) {
 		if (Input_Pressed[i]) Input_SetReleased(i);
 	}
+	/* TODO: Properly release instead of just clearing */
+	ClearTouches();
 }
 
 
@@ -456,9 +479,9 @@ int Hotkeys_FindPartial(int key) {
 	struct HotkeyData hk;
 	int i, modifiers = 0;
 
-	if (Key_IsControlPressed()) modifiers |= HOTKEY_MOD_CTRL;
-	if (Key_IsShiftPressed())   modifiers |= HOTKEY_MOD_SHIFT;
-	if (Key_IsAltPressed())     modifiers |= HOTKEY_MOD_ALT;
+	if (Key_IsCtrlPressed())  modifiers |= HOTKEY_MOD_CTRL;
+	if (Key_IsShiftPressed()) modifiers |= HOTKEY_MOD_SHIFT;
+	if (Key_IsAltPressed())   modifiers |= HOTKEY_MOD_ALT;
 
 	for (i = 0; i < HotkeysText.count; i++) {
 		hk = HotkeysList[i];
@@ -685,7 +708,7 @@ static cc_bool CheckIsFree(BlockID block) {
 	return true;
 }
 
-static void DoDeleteBlock(void) {
+void InputHandler_DeleteBlock(void) {
 	IVec3 pos;
 	BlockID old;
 	/* always play delete animations, even if we aren't deleting a block */
@@ -701,7 +724,7 @@ static void DoDeleteBlock(void) {
 	Event_RaiseBlock(&UserEvents.BlockChanged, pos, old, BLOCK_AIR);
 }
 
-static void DoPlaceBlock(void) {
+void InputHandler_PlaceBlock(void) {
 	IVec3 pos;
 	BlockID old, block;
 	pos = Game_SelectedPos.TranslatedPos;
@@ -714,13 +737,17 @@ static void DoPlaceBlock(void) {
 	if (Game_CanPick(old) || !Blocks.CanPlace[block]) return;
 	/* air-ish blocks can only replace over other air-ish blocks */
 	if (Blocks.Draw[block] == DRAW_GAS && Blocks.Draw[old] != DRAW_GAS) return;
+
+	/* undeletable gas blocks can't be replaced with other blocks */
+	if (Blocks.Collide[old] == COLLIDE_GAS && !Blocks.CanDelete[old]) return;
+
 	if (!CheckIsFree(block)) return;
 
 	Game_ChangeBlock(pos.X, pos.Y, pos.Z, block);
 	Event_RaiseBlock(&UserEvents.BlockChanged, pos, old, block);
 }
 
-static void DoPickBlock(void) {
+void InputHandler_PickBlock(void) {
 	IVec3 pos;
 	BlockID cur;
 	pos = Game_SelectedPos.pos;
@@ -732,7 +759,7 @@ static void DoPickBlock(void) {
 	Inventory_PickBlock(cur);
 }
 
-void InputHandler_PickBlocks(void) {
+void InputHandler_Tick(void) {
 	cc_bool left, middle, right;
 	TimeMS now = DateTime_CurrentUTC_MS();
 	int delta  = (int)(now - input_lastClick);
@@ -761,11 +788,11 @@ void InputHandler_PickBlocks(void) {
 	}
 
 	if (left) {
-		DoDeleteBlock();
+		InputHandler_DeleteBlock();
 	} else if (right) {
-		DoPlaceBlock();
+		InputHandler_PlaceBlock();
 	} else if (middle) {
-		DoPickBlock();
+		InputHandler_PickBlock();
 	}
 }
 
@@ -806,7 +833,7 @@ cc_bool Input_HandleMouseWheel(float delta) {
 	struct HacksComp* h;
 	cc_bool hotbar;
 
-	hotbar = Key_IsAltPressed() || Key_IsControlPressed() || Key_IsShiftPressed();
+	hotbar = Key_IsAltPressed() || Key_IsCtrlPressed() || Key_IsShiftPressed();
 	if (!hotbar && Camera.Active->Zoom(delta))   return true;
 	if (!KeyBind_IsPressed(KEYBIND_ZOOM_SCROLL)) return false;
 
@@ -830,13 +857,13 @@ static cc_bool HandleBlockKey(int key) {
 
 	if (key == KeyBinds[KEYBIND_DELETE_BLOCK]) {
 		MouseStatePress(MOUSE_LEFT);
-		DoDeleteBlock();
+		InputHandler_DeleteBlock();
 	} else if (key == KeyBinds[KEYBIND_PLACE_BLOCK]) {
 		MouseStatePress(MOUSE_RIGHT);
-		DoPlaceBlock();
+		InputHandler_PlaceBlock();
 	} else if (key == KeyBinds[KEYBIND_PICK_BLOCK]) {
 		MouseStatePress(MOUSE_MIDDLE);
-		DoPickBlock();
+		InputHandler_PickBlock();
 	} else {
 		return false;
 	}
@@ -1085,14 +1112,13 @@ static void OnInit(void) {
 	Event_Register_(&UserEvents.HackPermsChanged, NULL, InputHandler_CheckZoomFov);
 	KeyBind_Init();
 	StoredHotkeys_LoadAll();
+	/* Fix issue with Android where if you double click in server list to join, a touch */
+	/*  pointer is stuck down when the game loads (so you instantly start deleting blocks) */
+	ClearTouches();
 }
 
 static void OnFree(void) {
-#ifdef CC_BUILD_TOUCH
-	int i;
-	for (i = 0; i < INPUT_MAX_POINTERS; i++) touches[i].type = 0;
-	Pointers_Count = 0;
-#endif
+	ClearTouches();
 }
 
 struct IGameComponent Input_Component = {

@@ -257,9 +257,10 @@ static void ListScreen_UpdateEntry(struct ListScreen* s, struct ButtonWidget* bu
 static void ListScreen_RedrawEntries(struct ListScreen* s) {
 	cc_string str;
 	int i;
-
 	for (i = 0; i < LIST_SCREEN_ITEMS; i++) {
 		str = ListScreen_UNSAFE_Get(s, s->currentIndex + i);
+		
+		s->btns[i].disabled = String_CaselessEqualsConst(&str, LISTSCREEN_EMPTY);
 		s->UpdateEntry(s, &s->btns[i], &str);
 	}
 }
@@ -1320,7 +1321,7 @@ static void SaveLevelScreen_RemoveOverwrites(struct SaveLevelScreen* s) {
 }
 
 #ifdef CC_BUILD_WEB
-#include <emscripten.h>
+extern int interop_DownloadMap(const char* path, const char* filename);
 static void DownloadMap(const cc_string* path) {
 	char strPath[NATIVE_STR_LEN];
 	char strFile[NATIVE_STR_LEN];
@@ -1333,21 +1334,8 @@ static void DownloadMap(const cc_string* path) {
 	file.length = String_LastIndexOf(&file, '.');
 	String_AppendConst(&file, ".cw");
 	Platform_EncodeUtf8(strFile, &file);
-
-	res = EM_ASM_({
-		try {
-			var name = UTF8ToString($0);
-			var data = FS.readFile(name);
-			var blob = new Blob([data], { type: 'application/octet-stream' });
-			Module.saveBlob(blob, UTF8ToString($1));
-			FS.unlink(name);
-			return 0;
-		} catch (e) {
-			if (!(e instanceof FS.ErrnoError)) abort(e);
-			return -e.errno;
-		}
-	}, strPath, strFile);
-
+	
+	res = interop_DownloadMap(strPath, strFile);
 	if (res) {
 		Logger_SysWarn2(res, "Downloading map", &file);
 	} else {
@@ -1398,6 +1386,7 @@ static void SaveLevelScreen_SaveMap(struct SaveLevelScreen* s, const cc_string* 
 #else
 	Chat_Add1("&eSaved map to: %s", path);
 #endif
+	World.LastSave = Game.Time;
 	Gui_ShowPauseMenu();
 }
 
@@ -1565,7 +1554,6 @@ void SaveLevelScreen_Show(void) {
 static void TexturePackScreen_EntryClick(void* screen, void* widget) {
 	struct ListScreen* s = (struct ListScreen*)screen;
 	cc_string file = ListScreen_UNSAFE_GetCur(s, widget);
-	if (String_CaselessEqualsConst(&file, LISTSCREEN_EMPTY)) return;
 
 	TexturePack_SetDefault(&file);
 	TexturePack_Url.length = 0;
@@ -1593,18 +1581,12 @@ static void TexturePackScreen_LoadEntries(struct ListScreen* s) {
 }
 
 #ifdef CC_BUILD_WEB
-#include <emscripten.h>
+extern void interop_UploadTexPack(const char* path);
 static void TexturePackScreen_UploadCallback(const cc_string* path) {
 	char str[NATIVE_STR_LEN];
 	Platform_EncodeUtf8(str, path);
 
-	/* Move from temp into texpacks folder */
-	/* TODO: This is pretty awful and should be rewritten */
-	EM_ASM_({ 
-		var name = UTF8ToString($0);;
-		var data = FS.readFile(name);
-		FS.writeFile('/texpacks/' + name.substring(1), data);
-	}, str);
+	interop_UploadTexPack(str);
 	TexturePackScreen_Show();
 	TexturePack_SetDefault(path);
 	TexturePack_ExtractCurrent(true);
@@ -1635,7 +1617,6 @@ void TexturePackScreen_Show(void) {
 static void FontListScreen_EntryClick(void* screen, void* widget) {
 	struct ListScreen* s = (struct ListScreen*)screen;
 	cc_string fontName   = ListScreen_UNSAFE_GetCur(s, widget);
-	if (String_CaselessEqualsConst(&fontName, LISTSCREEN_EMPTY)) return;
 
 	Options_Set(OPT_FONT_NAME, &fontName);
 	Drawer2D_SetDefaultFont(&fontName);
@@ -1689,9 +1670,8 @@ static void HotkeyListScreen_EntryClick(void* screen, void* widget) {
 	int i, flags = 0;
 
 	text = ListScreen_UNSAFE_GetCur(s, widget);
-	if (String_CaselessEqualsConst(&text, LISTSCREEN_EMPTY)) {
-		EditHotkeyScreen_Show(original); 
-		return;
+	if (!text.length) {
+		EditHotkeyScreen_Show(original); return;
 	}
 
 	String_UNSAFE_Separate(&text, '+', &key, &value);
@@ -1715,7 +1695,6 @@ static void HotkeyListScreen_MakeFlags(int flags, cc_string* str) {
 }
 
 static void HotkeyListScreen_LoadEntries(struct ListScreen* s) {
-	static const cc_string empty = String_FromConst(LISTSCREEN_EMPTY);
 	cc_string text; char textBuffer[STRING_SIZE];
 	struct HotkeyData hKey;
 	int i;
@@ -1733,8 +1712,16 @@ static void HotkeyListScreen_LoadEntries(struct ListScreen* s) {
 		StringsBuffer_Add(&s->entries, &text);
 	}
 
-	for (i = 0; i < LIST_SCREEN_ITEMS; i++) {
-		StringsBuffer_Add(&s->entries, &empty);
+	/* Placeholder for 'add new hotkey' */
+	StringsBuffer_Add(&s->entries, &String_Empty);
+	ListScreen_Sort(s);
+}
+
+static void HotkeyListScreen_UpdateEntry(struct ListScreen* s, struct ButtonWidget* button, const cc_string* text) {
+	if (text->length) {
+		ButtonWidget_Set(button, text, &s->font);
+	} else {
+		ButtonWidget_SetConst(button, "New hotkey...", &s->font);
 	}
 }
 
@@ -1745,7 +1732,7 @@ void HotkeyListScreen_Show(void) {
 	s->LoadEntries = HotkeyListScreen_LoadEntries;
 	s->EntryClick  = HotkeyListScreen_EntryClick;
 	s->DoneClick   = Menu_SwitchPause;
-	s->UpdateEntry = ListScreen_UpdateEntry;
+	s->UpdateEntry = HotkeyListScreen_UpdateEntry;
 	ListScreen_Show();
 }
 
@@ -1756,11 +1743,8 @@ void HotkeyListScreen_Show(void) {
 static void LoadLevelScreen_EntryClick(void* screen, void* widget) {
 	cc_string path; char pathBuffer[FILENAME_SIZE];
 	struct ListScreen* s = (struct ListScreen*)screen;
-	cc_string relPath;
 
-	relPath = ListScreen_UNSAFE_GetCur(s, widget);
-	if (String_CaselessEqualsConst(&relPath, LISTSCREEN_EMPTY)) return;
-
+	cc_string relPath = ListScreen_UNSAFE_GetCur(s, widget);
 	String_InitArray(path, pathBuffer);
 	String_Format1(&path, "maps/%s", &relPath);
 	Map_LoadFrom(&path);
@@ -2880,9 +2864,9 @@ void ChatOptionsScreen_Show(void) {
 /*########################################################################################################################*
 *----------------------------------------------------GuiOptionsScreen-----------------------------------------------------*
 *#########################################################################################################################*/
-static void GuiOptionsScreen_GetShadows(cc_string* v) { Menu_GetBool(v, Drawer2D_BlackTextShadows); }
+static void GuiOptionsScreen_GetShadows(cc_string* v) { Menu_GetBool(v, Drawer2D.BlackTextShadows); }
 static void GuiOptionsScreen_SetShadows(const cc_string* v) {
-	Drawer2D_BlackTextShadows = Menu_SetBool(v, OPT_BLACK_TEXT);
+	Drawer2D.BlackTextShadows = Menu_SetBool(v, OPT_BLACK_TEXT);
 	Event_RaiseVoid(&ChatEvents.FontChanged);
 }
 
@@ -2898,9 +2882,9 @@ static void GuiOptionsScreen_SetInventory(const cc_string* v) { ChatOptionsScree
 static void GuiOptionsScreen_GetTabAuto(cc_string* v) { Menu_GetBool(v, Gui.TabAutocomplete); }
 static void GuiOptionsScreen_SetTabAuto(const cc_string* v) { Gui.TabAutocomplete = Menu_SetBool(v, OPT_TAB_AUTOCOMPLETE); }
 
-static void GuiOptionsScreen_GetUseFont(cc_string* v) { Menu_GetBool(v, !Drawer2D_BitmappedText); }
+static void GuiOptionsScreen_GetUseFont(cc_string* v) { Menu_GetBool(v, !Drawer2D.BitmappedText); }
 static void GuiOptionsScreen_SetUseFont(const cc_string* v) {
-	Drawer2D_BitmappedText = !Menu_SetBool(v, OPT_USE_CHAT_FONT);
+	Drawer2D.BitmappedText = !Menu_SetBool(v, OPT_USE_CHAT_FONT);
 	Event_RaiseVoid(&ChatEvents.FontChanged);
 }
 
@@ -3479,7 +3463,8 @@ static struct Widget* urlwarning_widgets[6] = {
 
 static void UrlWarningOverlay_OpenUrl(void* screen, void* b) {
 	struct UrlWarningOverlay* s = (struct UrlWarningOverlay*)screen;
-	Process_StartOpen(&s->url);
+	cc_result res = Process_StartOpen(&s->url);
+	if (res) Logger_SimpleWarn2(res, "opening url in browser", &s->url);
 	Gui_Remove((struct Screen*)s);
 }
 

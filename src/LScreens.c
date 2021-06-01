@@ -15,7 +15,6 @@
 #include "Window.h"
 #include "Input.h"
 #include "Options.h"
-#include "Game.h"
 #include "Utils.h"
 
 /*########################################################################################################################*
@@ -522,7 +521,7 @@ static void DirectConnectScreen_Load(struct DirectConnectScreen* s) {
 	Options_UNSAFE_Get("launcher-dc-port",     &port);
 	
 	String_InitArray(mppass, mppassBuffer);
-	Options_GetSecure("launcher-dc-mppass", &mppass, &user);
+	Options_GetSecure("launcher-dc-mppass", &mppass);
 	String_InitArray(addr, addrBuffer);
 	String_Format2(&addr, "%s:%s", &ip, &port);
 
@@ -568,7 +567,7 @@ static void DirectConnectScreen_StartClient(void* w, int idx) {
 	Options_Set("launcher-dc-username", user);
 	Options_Set("launcher-dc-ip",       &ip);
 	Options_Set("launcher-dc-port",     &port);
-	Options_SetSecure("launcher-dc-mppass", mppass, user);
+	Options_SetSecure("launcher-dc-mppass", mppass);
 
 	DirectConnectScreen_SetStatus("");
 	Launcher_StartGame(user, mppass, &ip, &port, &String_Empty);
@@ -706,7 +705,7 @@ CC_NOINLINE static void MainScreen_GetResume(struct ResumeInfo* info, cc_bool fu
 
 	if (!full) return;
 	String_InitArray(info->mppass, info->_mppassBuffer);
-	Options_GetSecure(ROPT_MPPASS, &info->mppass, &info->user);
+	Options_GetSecure(ROPT_MPPASS, &info->mppass);
 
 	info->valid = 
 		info->user.length && info->mppass.length &&
@@ -740,7 +739,7 @@ static void MainScreen_DoLogin(void) {
 
 	if (GetTokenTask.Base.working) return;
 	Options_Set(LOPT_USERNAME, user);
-	Options_SetSecure(LOPT_PASSWORD, pass, user);
+	Options_SetSecure(LOPT_PASSWORD, pass);
 
 	GetTokenTask_Run();
 	LLabel_SetConst(&s->lblStatus, "&eSigning in..");
@@ -751,7 +750,8 @@ static void MainScreen_Login(void* w, int idx) { MainScreen_DoLogin(); }
 
 static void MainScreen_Register(void* w, int idx) {
 	static const cc_string regUrl = String_FromConst(REGISTERNEW_URL);
-	Process_StartOpen(&regUrl);
+	cc_result res = Process_StartOpen(&regUrl);
+	if (res) Logger_SimpleWarn(res, "opening register webpage in browser");
 }
 
 static void MainScreen_Resume(void* w, int idx) {
@@ -806,7 +806,7 @@ static void MainScreen_Init(struct LScreen* s_) {
 	
 	String_InitArray(pass, passBuffer);
 	Options_UNSAFE_Get(LOPT_USERNAME, &user);
-	Options_GetSecure(LOPT_PASSWORD, &pass, &user);
+	Options_GetSecure(LOPT_PASSWORD, &pass);
 
 	LInput_SetText(&s->iptUsername, &user);
 	LInput_SetText(&s->iptPassword, &pass);
@@ -907,7 +907,7 @@ static void MainScreen_LoginPhase2(struct MainScreen* s, const cc_string* user) 
 		LInput_SetText(&s->iptUsername, user);
 		LWidget_Redraw(&s->iptUsername);
 	}
-	String_Copy(&Game_Username, user);
+	String_Copy(&Launcher_Username, user);
 
 	FetchServersTask_Run();
 	LLabel_SetConst(&s->lblStatus, "&eRetrieving servers list..");
@@ -1005,10 +1005,8 @@ static struct CheckResourcesScreen {
 
 static void CheckResourcesScreen_Yes(void*  w, int idx) { FetchResourcesScreen_SetActive(); }
 static void CheckResourcesScreen_Next(void* w, int idx) {
-	static const cc_string optionsTxt = String_FromConst("options.txt");
 	Http_ClearPending();
-
-	if (File_Exists(&optionsTxt)) {
+	if (Options_LoadResult != ReturnCode_FileNotFound) {
 		MainScreen_SetActive();
 	} else {
 		ChooseModeScreen_SetActive(true);
@@ -1300,8 +1298,9 @@ static void ServersScreen_Show(struct LScreen* s_) {
 	Drawer2D_MakeFont(&s->rowFont, 11, FONT_FLAGS_NONE);
 
 	s->table.rowFont = &s->rowFont;
-	/* also resets hash and filter */
 	LTable_Reset(&s->table);
+	LInput_ClearText(&s->iptHash);
+	LInput_ClearText(&s->iptSearch);
 
 	ServersScreen_ReloadServers(s);
 	/* This is so typing on keyboard by default searchs server list */

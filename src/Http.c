@@ -62,25 +62,21 @@ static void RequestList_RemoveAt(struct RequestList* list, int i) {
 }
 
 /* Finds index of request whose id matches the given id */
-static int RequestList_Find(struct RequestList* list, int id, struct HttpRequest* item) {
+static int RequestList_Find(struct RequestList* list, int id) {
 	int i;
-
 	for (i = 0; i < list->count; i++) {
 		if (id != list->entries[i].id) continue;
-
-		*item = list->entries[i];
 		return i;
 	}
 	return -1;
 }
 
-/* Tries to remove and free given request. */
+/* Tries to remove and free given request */
 static void RequestList_TryFree(struct RequestList* list, int id) {
-	struct HttpRequest req;
-	int i = RequestList_Find(list, id, &req);
+	int i = RequestList_Find(list, id);
 	if (i < 0) return;
 
-	Mem_Free(req.data);
+	Mem_Free(list->entries[i].data);
 	RequestList_RemoveAt(list, i);
 }
 
@@ -314,17 +310,19 @@ static void Http_SetRequestHeaders(struct HttpRequest* req) {
 #ifdef CC_BUILD_WEB
 #include <emscripten/emscripten.h>
 #include "Errors.h"
+extern void interop_DownloadAsync(const char* url, int method);
+extern int interop_IsHttpsOnly(void);
 
 cc_bool Http_DescribeError(cc_result res, cc_string* dst) { return false; }
 /* web browsers do caching already, so don't need last modified/etags */
 static void Http_AddHeader(struct HttpRequest* req, const char* key, const cc_string* value) { }
 
-static void OnUpdateProgress(int read, int total) {
+EMSCRIPTEN_KEEPALIVE void Http_OnUpdateProgress(int read, int total) {
 	if (!total) return;
 	http_curProgress = (int)(100.0f * read / total);
 }
 
-static void OnFinishedAsync(void* data, int len, int status) {
+EMSCRIPTEN_KEEPALIVE void Http_OnFinishedAsync(void* data, int len, int status) {
 	struct HttpRequest* req = &http_curRequest;
 	req->data          = data;
 	req->size          = len;
@@ -346,49 +344,12 @@ static void Http_DownloadAsync(struct HttpRequest* req) {
 	String_InitArray(url, urlBuffer);
 	Http_BeginRequest(req, &url);
 	Platform_EncodeUtf8(urlStr, &url);
-
-	EM_ASM_({
-		var url       = UTF8ToString($0);
-		var reqMethod = $1 == 1 ? 'HEAD' : 'GET';
-		
-		var onFinished = function(data, len, status) { 
-			Module['dynCall_viii']($2, data, len, status);
-		};
-		var onProgress = function(read, total) { 
-			Module['dynCall_vii']($3, read, total);
-		};
-		
-		var xhr = new XMLHttpRequest();
-		xhr.open(reqMethod, url);
-		xhr.responseType = 'arraybuffer';
-
-		var getContentLength = function(e) {
-			if (e.total) return e.total;
-
-			try {
-				var len = xhr.getResponseHeader('Content-Length');
-				return parseInt(len, 10);
-			} catch (ex) { return 0; }
-		};
-		
-		xhr.onload = function(e) {
-			var src  = new Uint8Array(xhr.response);
-			var len  = src.byteLength;
-			var data = _malloc(len);
-			HEAPU8.set(src, data);
-			onFinished(data, len || getContentLength(e), xhr.status);
-		};
-		xhr.onerror    = function(e) { onFinished(0, 0, xhr.status);  };
-		xhr.ontimeout  = function(e) { onFinished(0, 0, xhr.status);  };
-		xhr.onprogress = function(e) { onProgress(e.loaded, e.total); };
-
-		try { xhr.send(); } catch (e) { onFinished(0, 0, 0); }
-	}, urlStr, req->requestType, OnFinishedAsync, OnUpdateProgress);
+	interop_DownloadAsync(urlStr, req->requestType);
 }
 
 static void Http_WorkerInit(void) {
 	/* If this webpage is https://, browsers deny any http:// downloading */
-	httpsOnly = EM_ASM_INT_V({ return location.protocol === 'https:'; });
+	httpsOnly = interop_IsHttpsOnly();
 }
 static void Http_WorkerStart(void) { }
 static void Http_WorkerStop(void)  { }
@@ -497,17 +458,15 @@ static const cc_string curlLib = String_FromConst("libcurl.so.4");
 static const cc_string curlAlt = String_FromConst("libcurl.so.3");
 #endif
 
-#define QUOTE(x) #x
-#define DefineCurlFunc(sym) { QUOTE(sym), (void**)&_ ## sym }
 static cc_bool LoadCurlFuncs(void) {
 	static const struct DynamicLibSym funcs[8] = {
-		DefineCurlFunc(curl_global_init),    DefineCurlFunc(curl_global_cleanup),
-		DefineCurlFunc(curl_easy_init),      DefineCurlFunc(curl_easy_perform),
-		DefineCurlFunc(curl_easy_setopt),    DefineCurlFunc(curl_easy_cleanup),
-		DefineCurlFunc(curl_slist_free_all), DefineCurlFunc(curl_slist_append)
+		DynamicLib_Sym(curl_global_init),    DynamicLib_Sym(curl_global_cleanup),
+		DynamicLib_Sym(curl_easy_init),      DynamicLib_Sym(curl_easy_perform),
+		DynamicLib_Sym(curl_easy_setopt),    DynamicLib_Sym(curl_easy_cleanup),
+		DynamicLib_Sym(curl_slist_free_all), DynamicLib_Sym(curl_slist_append)
 	};
 	/* Non-essential function missing in older curl versions */
-	static const struct DynamicLibSym optFuncs[1] = { DefineCurlFunc(curl_easy_strerror) };
+	static const struct DynamicLibSym optFuncs[1] = { DynamicLib_Sym(curl_easy_strerror) };
 
 	void* lib = DynamicLib_Load2(&curlLib);
 	if (!lib) { 
@@ -909,7 +868,7 @@ static void JNICALL java_HttpAppendData(JNIEnv* env, jobject o, jbyteArray arr, 
 	if (!req->_capacity) Http_BufferInit(req);
 
 	Http_BufferEnsure(req, len);
-	(*env)->GetByteArrayRegion(env, arr, 0, len, &req->data[req->size]);
+	(*env)->GetByteArrayRegion(env, arr, 0, len, (jbyte*)(&req->data[req->size]));
 	Http_BufferExpanded(req, len);
 }
 
@@ -1041,7 +1000,7 @@ int Http_AsyncGetSkin(const cc_string* skinName) {
 	if (Utils_IsUrlPrefix(skinName)) {
 		String_Copy(&url, skinName);
 	} else {
-		String_Format1(&url, SKINS_SERVER "%s.png", skinName);
+		String_Format1(&url, SKINS_SERVER "/%s.png", skinName);
 	}
 	return Http_AsyncGetData(&url, false);
 }
@@ -1063,7 +1022,8 @@ cc_bool Http_GetResult(int reqID, struct HttpRequest* item) {
 	int i;
 	Mutex_Lock(processedMutex);
 	{
-		i = RequestList_Find(&processedReqs, reqID, item);
+		i = RequestList_Find(&processedReqs, reqID);
+		if (i >= 0) *item = processedReqs.entries[i];
 		if (i >= 0) RequestList_RemoveAt(&processedReqs, i);
 	}
 	Mutex_Unlock(processedMutex);

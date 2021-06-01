@@ -90,7 +90,6 @@ int Program_Run(int argc, char** argv) {
 static int Program_Run(int argc, char** argv) {
 #endif
 	cc_string args[GAME_MAX_CMDARGS];
-	cc_uint8 ip[4];
 	cc_uint16 port;
 
 	int argsCount = Platform_GetCommandLineArgs(argc, argv, args);
@@ -124,10 +123,6 @@ static int Program_Run(int argc, char** argv) {
 		String_Copy(&Game_Mppass,   &args[1]);
 		String_Copy(&Server.IP,     &args[2]);
 
-		if (!Utils_ParseIP(&args[2], ip)) {
-			WarnInvalidArg("Invalid IP", &args[2]);
-			return 1;
-		}
 		if (!Convert_ParseUInt16(&args[3], &port)) {
 			WarnInvalidArg("Invalid port", &args[3]);
 			return 1;

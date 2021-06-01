@@ -97,7 +97,6 @@
       <Optimization>Disabled</Optimization>
       <PreprocessorDefinitions>WIN32;_DEBUG;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ExceptionHandling>false</ExceptionHandling>
-      <FloatingPointModel>Fast</FloatingPointModel>
       <PrecompiledHeaderFile />
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
       <BufferSecurityCheck>false</BufferSecurityCheck>
@@ -119,7 +118,6 @@
       <Optimization>Disabled</Optimization>
       <PreprocessorDefinitions>_DEBUG;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ExceptionHandling>false</ExceptionHandling>
-      <FloatingPointModel>Fast</FloatingPointModel>
       <PrecompiledHeaderFile />
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
       <BufferSecurityCheck>false</BufferSecurityCheck>
@@ -142,7 +140,6 @@
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <PreprocessorDefinitions>WIN32;NDEBUG;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ExceptionHandling>false</ExceptionHandling>
-      <FloatingPointModel>Fast</FloatingPointModel>
       <PrecompiledHeaderFile />
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <BufferSecurityCheck>false</BufferSecurityCheck>
@@ -172,7 +169,6 @@
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <PreprocessorDefinitions>NDEBUG;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ExceptionHandling>false</ExceptionHandling>
-      <FloatingPointModel>Fast</FloatingPointModel>
       <PrecompiledHeaderFile />
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <BufferSecurityCheck>false</BufferSecurityCheck>
@@ -253,6 +249,7 @@
     <ClInclude Include="Widgets.h" />
     <ClInclude Include="Window.h" />
     <ClInclude Include="World.h" />
+    <ClInclude Include="_PlatformBase.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Animations.c" />
@@ -284,6 +281,9 @@
     <ClCompile Include="Deflate.c" />
     <ClCompile Include="Model.c" />
     <ClCompile Include="Menus.c" />
+    <ClCompile Include="Platform_Posix.c" />
+    <ClCompile Include="Platform_Web.c" />
+    <ClCompile Include="Platform_WinApi.c" />
     <ClCompile Include="Protocol.c" />
     <ClCompile Include="Physics.c" />
     <ClCompile Include="IsometricDrawer.c" />
@@ -297,7 +297,6 @@
     <ClCompile Include="BlockPhysics.c" />
     <ClCompile Include="PickedPosRenderer.c" />
     <ClCompile Include="Picking.c" />
-    <ClCompile Include="Platform.c" />
     <ClCompile Include="Program.c" />
     <ClCompile Include="Resources.c" />
     <ClCompile Include="Screens.c" />

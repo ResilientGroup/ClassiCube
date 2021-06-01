@@ -15,6 +15,7 @@ struct JsonContext {
 	int left;         /* Number of characters left to be inspected. */
 	cc_bool failed;   /* Whether there was an error parsing the JSON. */
 	cc_string curKey; /* Key/Name of current member */
+	int depth;        /* Object/Array depth (e.g. { { { is depth 3 */
 	
 	JsonOnNew OnNewArray;  /* Invoked when start of an array is read. */
 	JsonOnNew OnNewObject; /* Invoked when start of an object is read. */
@@ -53,6 +54,7 @@ struct LWebTask {
 };
 void LWebTask_Tick(struct LWebTask* task);
 void LWebTask_DisplayError(struct LWebTask* task, const char* action, cc_string* dst);
+void LWebTasks_Init(void);
 
 
 extern struct GetTokenTaskData {

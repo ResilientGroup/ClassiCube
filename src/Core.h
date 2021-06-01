@@ -17,7 +17,7 @@ typedef unsigned __int64 cc_uint64;
 #ifdef _WIN64
 typedef unsigned __int64 cc_uintptr;
 #else
-typedef unsigned int     cc_uintptr;
+typedef unsigned __int32 cc_uintptr;
 #endif
 
 #define CC_INLINE inline
@@ -235,7 +235,6 @@ Thus it is **NOT SAFE** to allocate a string on the stack. */
 #define CC_BUILD_SDL
 #elif defined __EMSCRIPTEN__
 #define CC_BUILD_WEB
-#define CC_BUILD_POSIX
 #define CC_BUILD_GL
 #define CC_BUILD_GLMODERN
 #define CC_BUILD_GLES

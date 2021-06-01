@@ -30,8 +30,9 @@ static struct FontDesc logoFont;
 static int titleX, titleY;
 
 cc_bool Launcher_ShouldExit, Launcher_ShouldUpdate;
-static char hashBuffer[STRING_SIZE];
+static char hashBuffer[STRING_SIZE], userBuffer[STRING_SIZE];
 cc_string Launcher_AutoHash = String_FromArray(hashBuffer);
+cc_string Launcher_Username = String_FromArray(userBuffer);
 
 static cc_bool useBitmappedFont, hasBitmappedFont;
 static struct Bitmap dirtBmp, stoneBmp;
@@ -96,7 +97,7 @@ cc_bool Launcher_StartGame(const cc_string* user, const cc_string* mppass, const
 		Options_Set(ROPT_USER,   user);
 		Options_Set(ROPT_IP,     ip);
 		Options_Set(ROPT_PORT,   port);
-		Options_SetSecure(ROPT_MPPASS, mppass, user);
+		Options_SetSecure(ROPT_MPPASS, mppass);
 	}
 	/* Save options BEFORE starting new game process */
 	/* Otherwise can get 'file already in use' errors on startup */
@@ -122,7 +123,7 @@ CC_NOINLINE static void StartFromInfo(struct ServerInfo* info) {
 	String_InitArray(port, portBuffer);
 
 	String_AppendInt(&port, info->port);
-	Launcher_StartGame(&Game_Username, &info->mppass, &info->ip, &port, &info->name);
+	Launcher_StartGame(&Launcher_Username, &info->mppass, &info->ip, &port, &info->name);
 }
 
 cc_bool Launcher_ConnectToServer(const cc_string* hash) {
@@ -254,7 +255,7 @@ static void Launcher_Init(void) {
 	Drawer2D_MakeFont(&Launcher_HintFont,  12, FONT_FLAGS_NONE);
 	titleX = Display_ScaleX(4); titleY = Display_ScaleY(4);
 
-	Drawer2D_Cols['g'] = BitmapCol_Make(125, 125, 125, 255);
+	Drawer2D.Colors['g'] = BitmapCol_Make(125, 125, 125, 255);
 	Utils_EnsureDirectory("texpacks");
 	Utils_EnsureDirectory("audio");
 }
@@ -291,11 +292,12 @@ void Launcher_Run(void) {
 #endif
 
 	Drawer2D_Component.Init();
-	Drawer2D_BitmappedText    = false;
-	Drawer2D_BlackTextShadows = true;
+	Drawer2D.BitmappedText    = false;
+	Drawer2D.BlackTextShadows = true;
 	InitFramebuffer();
 
-	Options_Get(LOPT_USERNAME, &Game_Username, "");
+	Options_Get(LOPT_USERNAME, &Launcher_Username, "");
+	LWebTasks_Init();
 	Session_Load();
 	Launcher_LoadSkin();
 	Launcher_Init();
@@ -500,9 +502,9 @@ void Launcher_TryLoadTexturePack(void) {
 
 void Launcher_UpdateLogoFont(void) {
 	Font_Free(&logoFont);
-	Drawer2D_BitmappedText = (useBitmappedFont || Launcher_ClassicBackground) && hasBitmappedFont;
+	Drawer2D.BitmappedText = (useBitmappedFont || Launcher_ClassicBackground) && hasBitmappedFont;
 	Drawer2D_MakeFont(&logoFont, 32, FONT_FLAGS_NONE);
-	Drawer2D_BitmappedText = false;
+	Drawer2D.BitmappedText = false;
 }
 
 /* Fills the given area using pixels from the source bitmap, by repeatedly tiling the bitmap. */
