@@ -29,6 +29,12 @@ const cc_result ReturnCode_SocketInProgess  = WSAEINPROGRESS;
 const cc_result ReturnCode_SocketWouldBlock = WSAEWOULDBLOCK;
 const cc_result ReturnCode_DirectoryExists  = ERROR_ALREADY_EXISTS;
 
+static void LoadDynamicFuncs(const cc_string* path, const struct DynamicLibSym* syms, int count) {
+	void* lib = DynamicLib_Load2(path);
+	if (!lib) { Logger_DynamicLibWarn("loading", path); return; }
+	DynamicLib_GetAll(lib, syms, count);
+}
+
 /*########################################################################################################################*
 *---------------------------------------------------------Memory----------------------------------------------------------*
 *#########################################################################################################################*/
@@ -373,14 +379,39 @@ void Platform_LoadSysFonts(void) {
 /*########################################################################################################################*
 *---------------------------------------------------------Socket----------------------------------------------------------*
 *#########################################################################################################################*/
-cc_result Socket_Create(cc_socket* s) {
-	int blockingMode = -1; /* non-blocking mode */
+static INT (WSAAPI *_WSAStringToAddressW)(LPWSTR addressString, INT addressFamily, LPVOID protocolInfo, LPVOID address, LPINT addressLength);
 
-	*s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-	if (*s == -1) return WSAGetLastError();
+static INT WSAAPI FallbackParseAddress(LPWSTR addressString, INT addressFamily, LPVOID protocolInfo, LPVOID address, LPINT addressLength) {
+	SOCKADDR_IN* addr4 = (SOCKADDR_IN*)address;
+	cc_uint8*    addr  = (cc_uint8*)&addr4->sin_addr;
+	cc_string ip, parts[4 + 1];
+	WCHAR tmp[NATIVE_STR_LEN];
 
-	ioctlsocket(*s, FIONBIO, &blockingMode);
+	Mem_Copy(tmp, addressString, sizeof(tmp));
+	Platform_Utf16ToAnsi(tmp);
+	ip = String_FromReadonly((char*)tmp);
+
+	/* 4+1 in case user tries '1.1.1.1.1' */
+	if (String_UNSAFE_Split(&ip, '.', parts, 4 + 1) != 4)
+		return ERR_INVALID_ARGUMENT;
+
+	if (!Convert_ParseUInt8(&parts[0], &addr[0]) || !Convert_ParseUInt8(&parts[1], &addr[1]) ||
+		!Convert_ParseUInt8(&parts[2], &addr[2]) || !Convert_ParseUInt8(&parts[3], &addr[3]))
+		return ERR_INVALID_ARGUMENT;
+
+	addr4->sin_family = AF_INET;
 	return 0;
+}
+
+static void LoadWinsockFuncs(void) {
+	static const struct DynamicLibSym funcs[] = {
+		DynamicLib_Sym(WSAStringToAddressW)
+	};
+
+	static const cc_string winsock32 = String_FromConst("WS2_32.DLL");
+	LoadDynamicFuncs(&winsock32, funcs, Array_Elems(funcs));
+	/* Fallback for older OS versions which lack WSAStringToAddressW */
+	if (!_WSAStringToAddressW) _WSAStringToAddressW = FallbackParseAddress;
 }
 
 cc_result Socket_Available(cc_socket s, int* available) {
@@ -388,20 +419,66 @@ cc_result Socket_Available(cc_socket s, int* available) {
 }
 
 cc_result Socket_GetError(cc_socket s, cc_result* result) {
-	socklen_t resultSize = sizeof(cc_result);
+	int resultSize = sizeof(cc_result);
 	return getsockopt(s, SOL_SOCKET, SO_ERROR, result, &resultSize);
 }
 
-cc_result Socket_Connect(cc_socket s, const cc_string* ip, int port) {
-	struct sockaddr addr;
-	cc_result res;
-	addr.sa_family = AF_INET;
+static int ParseHost(void* dst, WCHAR* host, int port) {
+	SOCKADDR_IN* addr4 = (SOCKADDR_IN*)dst;
+	struct hostent* res;
 
-	Stream_SetU16_BE( (cc_uint8*)&addr.sa_data[0], port);
-	if (!Utils_ParseIP(ip, (cc_uint8*)&addr.sa_data[2])) 
+	Platform_Utf16ToAnsi(host);
+	res = gethostbyname((char*)host);
+	if (!res || res->h_addrtype != AF_INET) return 0;
+
+	/* Must have at least one IPv4 address */
+	if (!res->h_addr_list[0]) return 0;
+
+	addr4->sin_family = AF_INET;
+	addr4->sin_port   = htons(port);
+	addr4->sin_addr   = *(IN_ADDR*)res->h_addr_list[0];
+	return AF_INET;
+}
+
+static int Socket_ParseAddress(void* dst, const cc_string* address, int port) {
+	SOCKADDR_IN*  addr4 =  (SOCKADDR_IN*)dst;
+	SOCKADDR_IN6* addr6 = (SOCKADDR_IN6*)dst;
+	WCHAR str[NATIVE_STR_LEN];
+	DWORD size;
+	Platform_EncodeUtf16(str, address);
+
+	size = sizeof(*addr4);
+	if (!_WSAStringToAddressW(str, AF_INET, NULL, addr4, &size)) {
+		addr4->sin_port  = htons(port);
+		return AF_INET;
+	}
+	size = sizeof(*addr6);
+	if (!_WSAStringToAddressW(str, AF_INET6, NULL, (SOCKADDR*)addr6, &size)) {
+		addr6->sin6_port = htons(port);
+		return AF_INET6;
+	}
+	return ParseHost(dst, str, port);
+}
+
+int Socket_ValidAddress(const cc_string* address) {
+	SOCKADDR_STORAGE addr;
+	return Socket_ParseAddress(&addr, address, 0);
+}
+
+cc_result Socket_Connect(cc_socket* s, const cc_string* address, int port) {
+	int family, blockingMode = -1; /* non-blocking mode */
+	SOCKADDR_STORAGE addr;
+	cc_result res;
+
+	*s = -1;
+	if (!(family = Socket_ParseAddress(&addr, address, port)))
 		return ERR_INVALID_ARGUMENT;
 
-	res = connect(s, &addr, sizeof(addr));
+	*s = socket(family, SOCK_STREAM, IPPROTO_TCP);
+	if (*s == -1) return WSAGetLastError();
+	ioctlsocket(*s, FIONBIO, &blockingMode);
+
+	res = connect(*s, (SOCKADDR*)&addr, sizeof(addr));
 	return res == -1 ? WSAGetLastError() : 0;
 }
 
@@ -664,14 +741,12 @@ static BOOL (WINAPI *_AttachConsole)(DWORD processId);
 static BOOL (WINAPI *_IsDebuggerPresent)(void);
 
 static void LoadKernelFuncs(void) {
-	static const struct DynamicLibSym funcs[2] = {
+	static const struct DynamicLibSym funcs[] = {
 		DynamicLib_Sym(AttachConsole), DynamicLib_Sym(IsDebuggerPresent)
 	};
-	static const cc_string kernel32 = String_FromConst("KERNEL32.DLL");
 
-	void* lib = DynamicLib_Load2(&kernel32);
-	if (!lib) { Logger_DynamicLibWarn("loading", &kernel32); return; }
-	DynamicLib_GetAll(lib, funcs, Array_Elems(funcs));
+	static const cc_string kernel32 = String_FromConst("KERNEL32.DLL");
+	LoadDynamicFuncs(&kernel32, funcs, Array_Elems(funcs));
 }
 
 void Platform_Init(void) {
@@ -685,6 +760,7 @@ void Platform_Init(void) {
 	if (res) Logger_SysWarn(res, "starting WSA");
 
 	LoadKernelFuncs();
+	LoadWinsockFuncs();
 	if (_IsDebuggerPresent) hasDebugger = _IsDebuggerPresent();
 	/* For when user runs from command prompt */
 	if (_AttachConsole) _AttachConsole(-1); /* ATTACH_PARENT_PROCESS */
@@ -723,14 +799,12 @@ static BOOL (WINAPI *_CryptProtectData  )(DATA_BLOB* dataIn, PCWSTR dataDescr, P
 static BOOL (WINAPI *_CryptUnprotectData)(DATA_BLOB* dataIn, PWSTR* dataDescr, PVOID entropy, PVOID reserved, PVOID promptStruct, DWORD flags, DATA_BLOB* dataOut);
 
 static void LoadCryptFuncs(void) {
-	static const struct DynamicLibSym funcs[2] = {
+	static const struct DynamicLibSym funcs[] = {
 		DynamicLib_Sym(CryptProtectData), DynamicLib_Sym(CryptUnprotectData)
 	};
-	static const cc_string crypt32 = String_FromConst("CRYPT32.DLL");
 
-	void* lib = DynamicLib_Load2(&crypt32);
-	if (!lib) { Logger_DynamicLibWarn("loading", &crypt32); return; }
-	DynamicLib_GetAll(lib, funcs, Array_Elems(funcs));
+	static const cc_string crypt32 = String_FromConst("CRYPT32.DLL");
+	LoadDynamicFuncs(&crypt32, funcs, Array_Elems(funcs));
 }
 
 cc_result Platform_Encrypt(const void* data, int len, cc_string* dst) {
